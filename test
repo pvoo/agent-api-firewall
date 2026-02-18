@@ -1,74 +1,155 @@
 #!/usr/bin/env bash
-# Test Agent API Firewall — verify routing, auth injection, and Wallarm blocking
+# Live integration tests against a running proxy
 set -uo pipefail
 
-URL="${1:-http://localhost:8282}"
-pass=0 fail=0
+cd "$(dirname "$0")"
 
-# Preflight: proxy must be reachable
-if ! curl -s -o /dev/null --max-time 5 "$URL/" 2>/dev/null; then
-  echo "❌ Proxy unreachable at $URL — is it running?"
+command -v yq >/dev/null 2>&1 || {
+  echo "ERROR: yq v4+ is required" >&2
+  exit 1
+}
+
+URL="${1:-http://localhost:${VAULT_PORT:-8282}}"
+AUTH_HEADER="$(yq -r '.auth.header // "X-Agent-Token"' config.yaml)"
+
+pass=0
+fail=0
+skip=0
+
+preflight_code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$URL/" 2>/dev/null || true)"
+if [[ -z "$preflight_code" ]]; then
+  preflight_code="000"
+fi
+if [[ "$preflight_code" == "000" ]]; then
+  echo "FAIL: proxy unreachable at $URL"
   exit 1
 fi
 
-t() {
-  local expect="$1" method="$2" path="$3" desc="$4"; shift 4
-  local code
-  code=$(curl -s -o /dev/null -w "%{http_code}" -X "$method" --max-time 10 "$@" "$URL$path" 2>/dev/null) || code=000
-
-  if [[ "$code" == "000" ]]; then
-    echo "  ❌ $method $path → timeout  $desc"; ((fail++)); return
-  fi
-
-  case "$expect" in
-    allow)
-      if [[ "$code" == "403" ]]; then
-        echo "  ❌ $method $path → $code  $desc (blocked by firewall)"; ((fail++))
-      else
-        echo "  ✅ $method $path → $code  $desc"; ((pass++))
-      fi ;;
-    block)
-      if [[ "$code" =~ ^40[34]$ ]]; then
-        echo "  ✅ $method $path → $code  $desc (blocked)"; ((pass++))
-      else
-        echo "  ❌ $method $path → $code  $desc (expected block)"; ((fail++))
-      fi ;;
-  esac
+in_set() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    [[ "$needle" == "$item" ]] && return 0
+  done
+  return 1
 }
 
-echo "╔════════════════════════════════════════════════╗"
-echo "║  Agent API Firewall Tests — $URL"
-echo "╚════════════════════════════════════════════════╝"
+assert_code() {
+  local expected_csv="$1"
+  local method="$2"
+  local path="$3"
+  local desc="$4"
+  shift 4
 
-echo "── Routing ──"
-t block GET / "catch-all returns 404"
-t block GET /unknown/foo "unknown prefix blocked"
+  local code
+  code="$(curl -s -o /dev/null -w "%{http_code}" -X "$method" --max-time 10 "$@" "$URL$path" 2>/dev/null || true)"
+  [[ -n "$code" ]] || code="000"
 
-echo "── Intercom: allowed ──"
-t allow GET  /intercom/me "identify admin"
-t allow GET  /intercom/teams "list teams"
-t allow POST /intercom/conversations/search "search conversations" \
-  -H "Content-Type: application/json" -d '{"query":{"field":"id","operator":"=","value":"1"}}'
+  IFS=',' read -r -a expected <<<"$expected_csv"
+  if in_set "$code" "${expected[@]}"; then
+    printf 'PASS: %-4s %-40s -> %s  %s\n' "$method" "$path" "$code" "$desc"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL: %-4s %-40s -> %s  %s (expected %s)\n' "$method" "$path" "$code" "$desc" "$expected_csv"
+    fail=$((fail + 1))
+  fi
+}
 
-echo "── Intercom: blocked ──"
-t block GET    /intercom/conversations "list all conversations"
-t block DELETE /intercom/conversations/1 "delete conversation"
-t block POST   /intercom/contacts "create contact"
-t block GET    /intercom/export/content/data "data export"
-t block POST   /intercom/messages "send message"
+resolve_token() {
+  local raw="$1"
+  if [[ "$raw" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$ ]]; then
+    local var_name="${BASH_REMATCH[1]}"
+    local value="${!var_name:-}"
+    echo "$value"
+  else
+    echo "$raw"
+  fi
+}
 
-echo "── OpenAI: allowed ──"
-t allow GET  /openai/v1/models "list models"
-t allow POST /openai/v1/chat/completions "chat completions" \
-  -H "Content-Type: application/json" -d '{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}'
-t allow POST /openai/v1/embeddings "embeddings" \
-  -H "Content-Type: application/json" -d '{"model":"text-embedding-3-small","input":"x"}'
+echo "== Agent API Firewall live tests =="
+echo "URL: $URL"
 
-echo "── OpenAI: blocked ──"
-t block POST /openai/v1/fine_tuning/jobs "fine-tuning"
-t block POST /openai/v1/images/generations "image generation"
-t block GET  /openai/v1/files "file access"
+root_code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL/unknown" 2>/dev/null || true)"
+[[ -n "$root_code" ]] || root_code="000"
+if [[ "$root_code" == "404" ]]; then
+  echo "PASS: unknown route returns 404"
+  pass=$((pass + 1))
+else
+  echo "FAIL: unknown route expected 404, got $root_code"
+  fail=$((fail + 1))
+fi
 
-echo ""
-echo "  $pass passed, $fail failed"
+mapfile -t AGENTS < <(yq -r '.agents | keys | .[]' config.yaml)
+
+first_agent=""
+first_api=""
+first_token=""
+
+for agent in "${AGENTS[@]}"; do
+  token_raw="$(yq -r ".agents.$agent.token // \"\"" config.yaml)"
+  token_value="$(resolve_token "$token_raw")"
+
+  access_count="$(yq -r ".agents.$agent.access | length" config.yaml)"
+  for ((idx = 0; idx < access_count; idx++)); do
+    api="$(yq -r ".agents.$agent.access[$idx].api" config.yaml)"
+    policy="$(yq -r ".agents.$agent.access[$idx].policy" config.yaml)"
+    spec="$(yq -r ".apis.$api.policies.$policy.spec // \"\"" config.yaml)"
+
+    probe_path="/$agent/$api/_probe"
+
+    assert_code "401" GET "$probe_path" "missing token blocked" \
+      -H "X-Agent-Firewall-Probe: 1"
+
+    assert_code "401" GET "$probe_path" "wrong token blocked" \
+      -H "$AUTH_HEADER: definitely-wrong-token" \
+      -H "X-Agent-Firewall-Probe: 1"
+
+    if [[ -n "$token_value" ]]; then
+      assert_code "204" GET "$probe_path" "valid token accepted" \
+        -H "$AUTH_HEADER: $token_value" \
+        -H "X-Agent-Firewall-Probe: 1"
+
+      if [[ -n "$spec" ]]; then
+        assert_code "403" GET "/$agent/$api/this-path-should-be-blocked" "spec blocks unknown endpoint" \
+          -H "$AUTH_HEADER: $token_value"
+      fi
+    else
+      echo "SKIP: $agent/$api valid-token tests (token env not set for $token_raw)"
+      skip=$((skip + 1))
+    fi
+
+    if [[ -z "$first_agent" && -n "$token_value" ]]; then
+      first_agent="$agent"
+      first_api="$api"
+      first_token="$token_value"
+    fi
+  done
+done
+
+# Cross-agent isolation smoke test (if two tokens are available)
+second_agent=""
+second_api=""
+for agent in "${AGENTS[@]}"; do
+  token_raw="$(yq -r ".agents.$agent.token // \"\"" config.yaml)"
+  token_value="$(resolve_token "$token_raw")"
+  [[ -n "$token_value" ]] || continue
+  [[ "$agent" == "$first_agent" ]] && continue
+
+  second_agent="$agent"
+  second_api="$(yq -r ".agents.$agent.access[0].api" config.yaml)"
+  break
+done
+
+if [[ -n "$first_agent" && -n "$second_agent" ]]; then
+  assert_code "401" GET "/$second_agent/$second_api/_probe" "agent token cannot access another agent route" \
+    -H "$AUTH_HEADER: $first_token" \
+    -H "X-Agent-Firewall-Probe: 1"
+else
+  echo "SKIP: cross-agent isolation test (need >=2 agents with resolved tokens)"
+  skip=$((skip + 1))
+fi
+
+echo
+echo "Result: $pass passed, $fail failed, $skip skipped"
 [[ $fail -eq 0 ]]

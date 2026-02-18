@@ -1,0 +1,35 @@
+listen: ":8282"
+auth:
+  header: "X-Agent-Token"
+
+agents:
+  support:
+    token: "${AGENT_SUPPORT_TOKEN}"
+    access:
+      - api: intercom
+        policy: support
+      - api: openai
+        policy: safe
+
+  research:
+    token: "${AGENT_RESEARCH_TOKEN}"
+    access:
+      - api: openai
+        policy: safe
+
+apis:
+  intercom:
+    upstream: https://api.intercom.io
+    auth: "Bearer ${INTERCOM_TOKEN}"
+    headers:
+      Intercom-Version: "2.14"
+    policies:
+      support:
+        spec: specs/intercom-support.yaml
+
+  openai:
+    upstream: https://api.openai.com
+    auth: "Bearer ${OPENAI_API_KEY}"
+    policies:
+      safe:
+        spec: specs/openai-safe.yaml

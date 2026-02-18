@@ -1,17 +1,58 @@
-# API Vault — define your APIs here.
-# Run ./generate to produce Caddyfile + docker-compose.yml
+# Agent API Firewall configuration
+#
+# Route format:
+#   /<agent>/<api>/*
+#
+# Request flow:
+#   Agent token check (header) -> optional OpenAPI policy validation -> upstream API
+#
+# Default behavior is deny-by-omission:
+# - If agent/api/policy is not defined here, route does not exist.
+# - If policy has a spec, unlisted endpoints/methods are blocked by Wallarm.
 
 listen: ":8282"
 
+auth:
+  # Header checked per route against the configured agent token.
+  header: "X-Agent-Token"
+
+wallarm:
+  # Stable release (not floating latest/develop)
+  image: wallarm/api-firewall:v0.9.5
+  # Intercom can return large response headers (e.g. CSP), so keep
+  # upstream read buffer comfortably above default.
+  server_read_buffer_size: 65536
+  server_write_buffer_size: 16384
+  read_buffer_size: 16384
+
+agents:
+  support:
+    token: "${AGENT_SUPPORT_TOKEN}"
+    access:
+      - api: intercom
+        policy: support
+      - api: openai
+        policy: safe
+
+  research:
+    token: "${AGENT_RESEARCH_TOKEN}"
+    access:
+      - api: openai
+        policy: safe
+
 apis:
   intercom:
-    upstream: https://api.eu.intercom.io
+    upstream: https://api.intercom.io
     auth: "Bearer ${INTERCOM_TOKEN}"
     headers:
-      Intercom-Version: "2.11"
-    spec: specs/intercom.yaml
+      Intercom-Version: "2.14"
+    policies:
+      support:
+        spec: specs/intercom-support.yaml
 
   openai:
     upstream: https://api.openai.com
     auth: "Bearer ${OPENAI_API_KEY}"
-    spec: specs/openai.yaml
+    policies:
+      safe:
+        spec: specs/openai-safe.yaml

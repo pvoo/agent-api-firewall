@@ -1,141 +1,235 @@
 #!/usr/bin/env bash
-# Render config.yaml → Caddyfile + docker-compose.yml
+# Render config.yaml -> Caddyfile + docker-compose.yml
 set -euo pipefail
+
 cd "$(dirname "$0")"
 
-command -v yq &>/dev/null || { echo "❌ Install yq v4+: https://github.com/mikefarah/yq"; exit 1; }
+command -v yq >/dev/null 2>&1 || {
+  echo "ERROR: yq v4+ is required: https://github.com/mikefarah/yq" >&2
+  exit 1
+}
 
-q() { yq -r "$@" config.yaml; }  # raw output, no YAML quoting
+q() {
+  yq -r "$1" config.yaml
+}
 
-LISTEN=$(q '.listen // ":8282"')
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+is_valid_name() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
+}
+
+env_syntax() {
+  # Convert ${VAR} to Caddy env syntax {env.VAR}
+  echo "$1" | sed 's/\${\([^}]*\)}/{env.\1}/g'
+}
+
+LISTEN="$(q '.listen // ":8282"')"
+AUTH_HEADER="$(q '.auth.header // "X-Agent-Token"')"
+WALLARM_IMAGE="$(q '.wallarm.image // "wallarm/api-firewall:v0.9.5"')"
+WALLARM_SERVER_READ_BUFFER_SIZE="$(q '.wallarm.server_read_buffer_size // 65536')"
+WALLARM_SERVER_WRITE_BUFFER_SIZE="$(q '.wallarm.server_write_buffer_size // 16384')"
+WALLARM_READ_BUFFER_SIZE="$(q '.wallarm.read_buffer_size // 16384')"
+
+mapfile -t AGENTS < <(q '.agents | keys | .[]')
 mapfile -t APIS < <(q '.apis | keys | .[]')
-[[ ${#APIS[@]} -gt 0 ]] || { echo "❌ No APIs defined in config.yaml"; exit 1; }
 
-env_syntax() { echo "$1" | sed 's/\${\([^}]*\)}/{env.\1}/g'; }
+[[ ${#AGENTS[@]} -gt 0 ]] || die "No agents defined in config.yaml"
+[[ ${#APIS[@]} -gt 0 ]] || die "No apis defined in config.yaml"
 
-# Validate config
+# route records: agent|token|api|policy|spec|upstream
+declare -a ROUTES=()
+declare -A FW_SPECS=()
+declare -A FW_UPSTREAMS=()
+declare -A ROUTE_GUARD=()
+
 for api in "${APIS[@]}"; do
-  [[ "$api" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "❌ Invalid API name: '$api' (use lowercase alphanumeric)"; exit 1; }
-  upstream=$(q ".apis.$api.upstream // \"\"")
-  [[ -n "$upstream" ]] || { echo "❌ API '$api' missing 'upstream'"; exit 1; }
-  spec=$(q ".apis.$api.spec // \"\"")
-  [[ -z "$spec" || -f "$spec" ]] || { echo "❌ API '$api' spec not found: $spec"; exit 1; }
+  is_valid_name "$api" || die "Invalid API name '$api'"
+  upstream="$(q ".apis.$api.upstream // \"\"")"
+  [[ -n "$upstream" ]] || die "API '$api' missing upstream"
+
 done
 
-# ── Caddyfile ──────────────────────────────────────────────
-{
-  cat <<-EOF
-	# Auto-generated — edit config.yaml, then run ./generate
-	{
-	  auto_https off
-	  admin off
-	}
+for agent in "${AGENTS[@]}"; do
+  is_valid_name "$agent" || die "Invalid agent name '$agent'"
 
-	$LISTEN {
-	EOF
+  token="$(q ".agents.$agent.token // \"\"")"
+  [[ -n "$token" ]] || die "Agent '$agent' missing token"
 
-  for api in "${APIS[@]}"; do
-    upstream=$(q ".apis.$api.upstream")
-    auth=$(q ".apis.$api.auth // \"\"")
-    spec=$(q ".apis.$api.spec // \"\"")
+  access_count="$(q ".agents.$agent.access | length")"
+  [[ "$access_count" =~ ^[0-9]+$ ]] || die "Agent '$agent' access must be a list"
+  (( access_count > 0 )) || die "Agent '$agent' has no access entries"
 
-    # Backend: Wallarm sidecar if spec exists, else direct
+  for ((idx = 0; idx < access_count; idx++)); do
+    api="$(q ".agents.$agent.access[$idx].api // \"\"")"
+    policy="$(q ".agents.$agent.access[$idx].policy // \"\"")"
+
+    [[ -n "$api" ]] || die "Agent '$agent' access[$idx] missing api"
+    [[ -n "$policy" ]] || die "Agent '$agent' access[$idx] missing policy"
+    is_valid_name "$api" || die "Invalid api '$api' in agent '$agent'"
+    is_valid_name "$policy" || die "Invalid policy '$policy' in agent '$agent'"
+
+    api_upstream="$(q ".apis.$api.upstream // \"\"")"
+    [[ -n "$api_upstream" ]] || die "Agent '$agent' references undefined api '$api'"
+
+    policy_exists="$(q ".apis.$api.policies | has(\"$policy\")")"
+    [[ "$policy_exists" == "true" ]] || die "Agent '$agent' references undefined policy '$policy' on api '$api'"
+
+    route_key="$agent|$api"
+    if [[ -n "${ROUTE_GUARD[$route_key]:-}" ]]; then
+      die "Duplicate route '$agent/$api'. Keep one policy per agent/api route."
+    fi
+    ROUTE_GUARD[$route_key]=1
+
+    spec="$(q ".apis.$api.policies.$policy.spec // \"\"")"
+
+    ROUTES+=("$agent|$token|$api|$policy|$spec|$api_upstream")
+
     if [[ -n "$spec" ]]; then
-      backend="fw-$api:8080"
+      [[ -f "$spec" ]] || die "Spec file not found for $api/$policy: $spec"
+      fw_key="$api|$policy"
+      FW_SPECS[$fw_key]="$spec"
+      FW_UPSTREAMS[$fw_key]="$api_upstream"
+    fi
+  done
+done
+
+# Generate Caddyfile
+{
+  cat <<EOF_HEADER
+# Auto-generated. Edit config.yaml, then run ./render
+{
+  auto_https off
+  admin off
+}
+
+$LISTEN {
+EOF_HEADER
+
+  for route in "${ROUTES[@]}"; do
+    IFS='|' read -r agent token api policy spec api_upstream <<<"$route"
+
+    matcher="auth_${agent}_${api}"
+    matcher="$(echo "$matcher" | tr '-' '_' )"
+
+    if [[ -n "$spec" ]]; then
+      backend="fw-${api}-${policy}:8080"
     else
-      backend="$upstream"
+      backend="$api_upstream"
     fi
 
-    echo "  handle_path /$api/* {"
+    cat <<EOF_ROUTE
+  handle_path /$agent/$api/* {
+    @$matcher header $AUTH_HEADER "$(env_syntax "$token")"
+    handle @$matcher {
+      @probe header X-Agent-Firewall-Probe "1"
+      respond @probe 204
+EOF_ROUTE
 
-    # Auth header
-    [[ -n "$auth" ]] && echo "    request_header Authorization \"$(env_syntax "$auth")\""
+    api_auth="$(q ".apis.$api.auth // \"\"")"
+    if [[ -n "$api_auth" ]]; then
+      echo "      request_header Authorization \"$(env_syntax "$api_auth")\""
+    fi
 
-    # Query param auth
     while IFS= read -r key; do
       [[ -n "$key" ]] || continue
-      val=$(q ".apis.$api.auth_query.$key")
-      echo "    uri query $key $(env_syntax "$val")"
+      val="$(q ".apis.$api.auth_query.$key")"
+      echo "      uri query $key $(env_syntax "$val")"
     done < <(q ".apis.$api.auth_query // {} | keys | .[]")
 
-    # Extra headers
     while IFS= read -r hdr; do
       [[ -n "$hdr" ]] || continue
-      val=$(q ".apis.$api.headers.\"$hdr\"")
-      echo "    request_header $hdr \"$(env_syntax "$val")\""
+      val="$(q ".apis.$api.headers.\"$hdr\"")"
+      echo "      request_header $hdr \"$(env_syntax "$val")\""
     done < <(q ".apis.$api.headers // {} | keys | .[]")
 
-    # Reverse proxy
     if [[ "$backend" == https://* ]]; then
-      host=${backend#https://}; host=${host%%/*}
-      echo "    reverse_proxy $backend {"
-      echo "      header_up Host $host"
-      echo "    }"
+      host="${backend#https://}"
+      host="${host%%/*}"
+      cat <<EOF_PROXY
+      reverse_proxy $backend {
+        header_up Host $host
+      }
+EOF_PROXY
     else
-      echo "    reverse_proxy $backend"
+      echo "      reverse_proxy $backend"
     fi
 
-    echo "  }"
+    cat <<'EOF_FOOTER'
+    }
+    respond "unauthorized" 401
+  }
+EOF_FOOTER
   done
 
+  echo ""
   echo "  respond 404"
   echo "}"
 } > Caddyfile
 
-# ── docker-compose.yml ─────────────────────────────────────
+# Generate docker-compose.yml
 {
-  cat <<-'EOF'
-	# Auto-generated — edit config.yaml, then run ./generate
-	services:
-	  router:
-	    image: caddy:2-alpine
-	    container_name: agent-api-firewall
-	    restart: unless-stopped
-	    ports: ["${VAULT_BIND:-127.0.0.1}:${VAULT_PORT:-8282}:8282"]
-	    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
-	    env_file: [.env]
-	    networks: [vault]
-	EOF
+  cat <<'EOF_COMPOSE'
+# Auto-generated. Edit config.yaml, then run ./render
+services:
+  router:
+    image: caddy:2.8.4-alpine
+    container_name: agent-api-firewall
+    restart: unless-stopped
+    ports: ["${VAULT_BIND:-127.0.0.1}:${VAULT_PORT:-8282}:8282"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
+    env_file: [.env]
+    networks: [vault]
+EOF_COMPOSE
 
-  # depends_on for firewall services
-  deps=""
-  for api in "${APIS[@]}"; do
-    [[ -n "$(q ".apis.$api.spec // \"\"")" ]] && deps="$deps fw-$api"
-  done
-  if [[ -n "$deps" ]]; then
+  mapfile -t FW_KEYS < <(printf "%s\n" "${!FW_SPECS[@]}" | sort)
+
+  if (( ${#FW_KEYS[@]} > 0 )); then
     echo "    depends_on:"
-    for d in $deps; do echo "      $d: { condition: service_started }"; done
+    for key in "${FW_KEYS[@]}"; do
+      IFS='|' read -r api policy <<<"$key"
+      echo "      fw-${api}-${policy}: { condition: service_started }"
+    done
   fi
 
-  # Wallarm firewall services
-  for api in "${APIS[@]}"; do
-    spec=$(q ".apis.$api.spec // \"\"")
-    [[ -z "$spec" ]] && continue
-    upstream=$(q ".apis.$api.upstream")
+  for key in "${FW_KEYS[@]}"; do
+    IFS='|' read -r api policy <<<"$key"
+    spec="${FW_SPECS[$key]}"
+    upstream="${FW_UPSTREAMS[$key]}"
 
-    cat <<-EOF
+    cat <<EOF_FW
 
-	  fw-$api:
-	    image: wallarm/api-firewall:v0.8.2
-	    container_name: agent-api-firewall-fw-$api
-	    restart: unless-stopped
-	    volumes: ["./$spec:/spec.yaml:ro"]
-	    environment:
-	      APIFW_URL: http://0.0.0.0:8080
-	      APIFW_API_SPECS: /spec.yaml
-	      APIFW_SERVER_URL: $upstream
-	      APIFW_REQUEST_VALIDATION: BLOCK
-	      APIFW_RESPONSE_VALIDATION: LOG_ONLY
-	      APIFW_CUSTOM_BLOCK_STATUS_CODE: "403"
-	      APIFW_LOG_FORMAT: JSON
-	      APIFW_LOG_LEVEL: INFO
-	    networks: [vault]
-	EOF
+  fw-${api}-${policy}:
+    image: $WALLARM_IMAGE
+    container_name: agent-api-firewall-fw-${api}-${policy}
+    restart: unless-stopped
+    volumes: ["./$spec:/spec.yaml:ro"]
+    environment:
+      APIFW_URL: http://0.0.0.0:8080
+      APIFW_API_SPECS: /spec.yaml
+      APIFW_SERVER_URL: $upstream
+      APIFW_SERVER_READ_BUFFER_SIZE: "$WALLARM_SERVER_READ_BUFFER_SIZE"
+      APIFW_SERVER_WRITE_BUFFER_SIZE: "$WALLARM_SERVER_WRITE_BUFFER_SIZE"
+      APIFW_READ_BUFFER_SIZE: "$WALLARM_READ_BUFFER_SIZE"
+      APIFW_REQUEST_VALIDATION: BLOCK
+      APIFW_RESPONSE_VALIDATION: LOG_ONLY
+      APIFW_CUSTOM_BLOCK_STATUS_CODE: "403"
+      APIFW_LOG_FORMAT: JSON
+      APIFW_LOG_LEVEL: INFO
+    networks: [vault]
+EOF_FW
   done
 
-  echo ""
-  echo "networks:"
-  echo "  vault:"
+  cat <<'EOF_NET'
+
+networks:
+  vault:
+EOF_NET
 } > docker-compose.yml
 
-echo "✅ Generated Caddyfile + docker-compose.yml (${#APIS[@]} APIs)"
+echo "OK: generated Caddyfile + docker-compose.yml"
+echo "    routes: ${#ROUTES[@]}"
+echo "    firewall services: ${#FW_SPECS[@]}"

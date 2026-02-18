@@ -1,0 +1,444 @@
+openapi: 3.0.1
+info:
+  title: Intercom Support Policy
+  version: "1.0.0"
+  description: |
+    Restricted Intercom policy for support/ticket workflows.
+
+    Key constraints:
+    - Team-scoped conversation/ticket search only.
+    - No contact/company creation or mutation.
+    - No bulk export/download endpoints.
+
+servers:
+  - url: https://api.intercom.io
+  - url: https://api.eu.intercom.io
+  - url: https://api.au.intercom.io
+
+security:
+  - bearerAuth: []
+
+paths:
+  /me:
+    get:
+      summary: Identify current admin
+      operationId: getCurrentAdmin
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      responses:
+        "200":
+          description: Current admin info
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /admins:
+    get:
+      summary: List admins
+      operationId: listAdmins
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      responses:
+        "200":
+          description: Admin list
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /teams:
+    get:
+      summary: List teams
+      operationId: listTeams
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      responses:
+        "200":
+          description: Team list
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /conversations/search:
+    post:
+      summary: Search conversations by allowed team only
+      operationId: searchConversations
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeamScopedSearchRequest"
+      responses:
+        "200":
+          description: Conversation search results
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /conversations/{conversation_id}:
+    get:
+      summary: Retrieve a conversation
+      operationId: getConversation
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - $ref: "#/components/parameters/ConversationId"
+      responses:
+        "200":
+          description: Conversation details
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /conversations/{conversation_id}/reply:
+    post:
+      summary: Reply or note on a conversation
+      operationId: replyConversation
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - $ref: "#/components/parameters/ConversationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplyRequest"
+      responses:
+        "200":
+          description: Conversation with new part
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /conversations/{conversation_id}/parts:
+    post:
+      summary: Add part/action (note, assignment, open/close, snooze)
+      operationId: addConversationPart
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - $ref: "#/components/parameters/ConversationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationPartRequest"
+      responses:
+        "200":
+          description: Updated conversation
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /conversations/{conversation_id}/tags:
+    post:
+      summary: Add a tag to a conversation
+      operationId: tagConversation
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - $ref: "#/components/parameters/ConversationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [id, admin_id]
+              properties:
+                id:
+                  type: string
+                admin_id:
+                  oneOf:
+                    - type: integer
+                    - type: string
+      responses:
+        "200":
+          description: Tag object
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /contacts/search:
+    post:
+      summary: Search contacts
+      operationId: searchContacts
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericSearchRequest"
+      responses:
+        "200":
+          description: Contact list
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /contacts/{contact_id}:
+    get:
+      summary: Retrieve contact
+      operationId: getContact
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - $ref: "#/components/parameters/ContactId"
+      responses:
+        "200":
+          description: Contact details
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /tickets/search:
+    post:
+      summary: Search tickets by allowed team only
+      operationId: searchTickets
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeamScopedSearchRequest"
+      responses:
+        "200":
+          description: Ticket search results
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /tickets/{ticket_id}:
+    get:
+      summary: Retrieve ticket
+      operationId: getTicket
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - $ref: "#/components/parameters/TicketId"
+      responses:
+        "200":
+          description: Ticket details
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    IntercomVersion:
+      name: Intercom-Version
+      in: header
+      required: false
+      schema:
+        type: string
+        enum: ["2.14"]
+        default: "2.14"
+
+    ConversationId:
+      name: conversation_id
+      in: path
+      required: true
+      schema:
+        oneOf:
+          - type: integer
+          - type: string
+
+    ContactId:
+      name: contact_id
+      in: path
+      required: true
+      schema:
+        oneOf:
+          - type: integer
+          - type: string
+
+    TicketId:
+      name: ticket_id
+      in: path
+      required: true
+      schema:
+        oneOf:
+          - type: integer
+          - type: string
+
+  schemas:
+    AllowedTeamId:
+      type: integer
+      enum:
+        - 6979737
+        - 7257201
+        - 8589981
+
+    TeamFilterEquals:
+      type: object
+      additionalProperties: false
+      required: [field, operator, value]
+      properties:
+        field:
+          type: string
+          enum: [team_assignee_id]
+        operator:
+          type: string
+          enum: ["="]
+        value:
+          $ref: "#/components/schemas/AllowedTeamId"
+
+    TeamFilterIn:
+      type: object
+      additionalProperties: false
+      required: [field, operator, value]
+      properties:
+        field:
+          type: string
+          enum: [team_assignee_id]
+        operator:
+          type: string
+          enum: [IN]
+        value:
+          type: array
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/AllowedTeamId"
+
+    TeamScopedSearchRequest:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query:
+          oneOf:
+            - $ref: "#/components/schemas/TeamFilterEquals"
+            - $ref: "#/components/schemas/TeamFilterIn"
+        pagination:
+          type: object
+          additionalProperties: false
+          properties:
+            per_page:
+              type: integer
+              minimum: 1
+              maximum: 150
+            starting_after:
+              type: string
+
+    SearchFilter:
+      type: object
+      additionalProperties: false
+      required: [field, operator, value]
+      properties:
+        field:
+          type: string
+          minLength: 1
+        operator:
+          type: string
+          enum: ["=", "!=", "IN", "NIN", "<", ">", "~", "!~", "^", "$"]
+        value:
+          oneOf:
+            - type: string
+            - type: integer
+            - type: boolean
+            - type: array
+              items:
+                oneOf:
+                  - type: string
+                  - type: integer
+                  - type: boolean
+
+    GenericSearchRequest:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query:
+          $ref: "#/components/schemas/SearchFilter"
+        pagination:
+          type: object
+          additionalProperties: false
+          properties:
+            per_page:
+              type: integer
+              minimum: 1
+              maximum: 150
+            starting_after:
+              type: string
+
+    ReplyRequest:
+      type: object
+      additionalProperties: false
+      required: [message_type, type, body]
+      properties:
+        message_type:
+          type: string
+          enum: [comment, note]
+        type:
+          type: string
+          enum: [admin]
+        admin_id:
+          oneOf:
+            - type: integer
+            - type: string
+        body:
+          type: string
+          maxLength: 10000
+        attachment_urls:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            format: uri
+
+    ConversationPartRequest:
+      type: object
+      additionalProperties: false
+      required: [message_type, admin_id]
+      properties:
+        message_type:
+          type: string
+          enum: [note, assignment, close, open, snoozed]
+        admin_id:
+          oneOf:
+            - type: integer
+            - type: string
+        body:
+          type: string
+          maxLength: 10000
+        type:
+          type: string
+          enum: [admin, team]
+        assignee_id:
+          oneOf:
+            - type: integer
+            - type: string
+        snoozed_until:
+          type: integer
+
+# Endpoints intentionally blocked by omission:
+# - GET    /conversations
+# - POST   /contacts
+# - PUT    /contacts/{id}
+# - DELETE /contacts/{id}
+# - *      /export/*
+# - *      /download/*
+# - *      /data_attributes/*
+# - POST   /messages
