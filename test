@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Test Agent API Firewall — verify routing, auth injection, and Wallarm blocking
+set -uo pipefail
+
+URL="${1:-http://localhost:8282}"
+pass=0 fail=0
+
+# Preflight: proxy must be reachable
+if ! curl -s -o /dev/null --max-time 5 "$URL/" 2>/dev/null; then
+  echo "❌ Proxy unreachable at $URL — is it running?"
+  exit 1
+fi
+
+t() {
+  local expect="$1" method="$2" path="$3" desc="$4"; shift 4
+  local code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X "$method" --max-time 10 "$@" "$URL$path" 2>/dev/null) || code=000
+
+  if [[ "$code" == "000" ]]; then
+    echo "  ❌ $method $path → timeout  $desc"; ((fail++)); return
+  fi
+
+  case "$expect" in
+    allow)
+      if [[ "$code" == "403" ]]; then
+        echo "  ❌ $method $path → $code  $desc (blocked by firewall)"; ((fail++))
+      else
+        echo "  ✅ $method $path → $code  $desc"; ((pass++))
+      fi ;;
+    block)
+      if [[ "$code" =~ ^40[34]$ ]]; then
+        echo "  ✅ $method $path → $code  $desc (blocked)"; ((pass++))
+      else
+        echo "  ❌ $method $path → $code  $desc (expected block)"; ((fail++))
+      fi ;;
+  esac
+}
+
+echo "╔════════════════════════════════════════════════╗"
+echo "║  Agent API Firewall Tests — $URL"
+echo "╚════════════════════════════════════════════════╝"
+
+echo "── Routing ──"
+t block GET / "catch-all returns 404"
+t block GET /unknown/foo "unknown prefix blocked"
+
+echo "── Intercom: allowed ──"
+t allow GET  /intercom/me "identify admin"
+t allow GET  /intercom/teams "list teams"
+t allow POST /intercom/conversations/search "search conversations" \
+  -H "Content-Type: application/json" -d '{"query":{"field":"id","operator":"=","value":"1"}}'
+
+echo "── Intercom: blocked ──"
+t block GET    /intercom/conversations "list all conversations"
+t block DELETE /intercom/conversations/1 "delete conversation"
+t block POST   /intercom/contacts "create contact"
+t block GET    /intercom/export/content/data "data export"
+t block POST   /intercom/messages "send message"
+
+echo "── OpenAI: allowed ──"
+t allow GET  /openai/v1/models "list models"
+t allow POST /openai/v1/chat/completions "chat completions" \
+  -H "Content-Type: application/json" -d '{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}'
+t allow POST /openai/v1/embeddings "embeddings" \
+  -H "Content-Type: application/json" -d '{"model":"text-embedding-3-small","input":"x"}'
+
+echo "── OpenAI: blocked ──"
+t block POST /openai/v1/fine_tuning/jobs "fine-tuning"
+t block POST /openai/v1/images/generations "image generation"
+t block GET  /openai/v1/files "file access"
+
+echo ""
+echo "  $pass passed, $fail failed"
+[[ $fail -eq 0 ]]

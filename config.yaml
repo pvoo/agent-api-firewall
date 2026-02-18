@@ -1,0 +1,17 @@
+# API Vault — define your APIs here.
+# Run ./generate to produce Caddyfile + docker-compose.yml
+
+listen: ":8282"
+
+apis:
+  intercom:
+    upstream: https://api.eu.intercom.io
+    auth: "Bearer ${INTERCOM_TOKEN}"
+    headers:
+      Intercom-Version: "2.11"
+    spec: specs/intercom.yaml
+
+  openai:
+    upstream: https://api.openai.com
+    auth: "Bearer ${OPENAI_API_KEY}"
+    spec: specs/openai.yaml

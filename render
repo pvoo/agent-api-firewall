@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Render config.yaml → Caddyfile + docker-compose.yml
+set -euo pipefail
+cd "$(dirname "$0")"
+
+command -v yq &>/dev/null || { echo "❌ Install yq v4+: https://github.com/mikefarah/yq"; exit 1; }
+
+q() { yq -r "$@" config.yaml; }  # raw output, no YAML quoting
+
+LISTEN=$(q '.listen // ":8282"')
+mapfile -t APIS < <(q '.apis | keys | .[]')
+[[ ${#APIS[@]} -gt 0 ]] || { echo "❌ No APIs defined in config.yaml"; exit 1; }
+
+env_syntax() { echo "$1" | sed 's/\${\([^}]*\)}/{env.\1}/g'; }
+
+# Validate config
+for api in "${APIS[@]}"; do
+  [[ "$api" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "❌ Invalid API name: '$api' (use lowercase alphanumeric)"; exit 1; }
+  upstream=$(q ".apis.$api.upstream // \"\"")
+  [[ -n "$upstream" ]] || { echo "❌ API '$api' missing 'upstream'"; exit 1; }
+  spec=$(q ".apis.$api.spec // \"\"")
+  [[ -z "$spec" || -f "$spec" ]] || { echo "❌ API '$api' spec not found: $spec"; exit 1; }
+done
+
+# ── Caddyfile ──────────────────────────────────────────────
+{
+  cat <<-EOF
+	# Auto-generated — edit config.yaml, then run ./generate
+	{
+	  auto_https off
+	  admin off
+	}
+
+	$LISTEN {
+	EOF
+
+  for api in "${APIS[@]}"; do
+    upstream=$(q ".apis.$api.upstream")
+    auth=$(q ".apis.$api.auth // \"\"")
+    spec=$(q ".apis.$api.spec // \"\"")
+
+    # Backend: Wallarm sidecar if spec exists, else direct
+    if [[ -n "$spec" ]]; then
+      backend="fw-$api:8080"
+    else
+      backend="$upstream"
+    fi
+
+    echo "  handle_path /$api/* {"
+
+    # Auth header
+    [[ -n "$auth" ]] && echo "    request_header Authorization \"$(env_syntax "$auth")\""
+
+    # Query param auth
+    while IFS= read -r key; do
+      [[ -n "$key" ]] || continue
+      val=$(q ".apis.$api.auth_query.$key")
+      echo "    uri query $key $(env_syntax "$val")"
+    done < <(q ".apis.$api.auth_query // {} | keys | .[]")
+
+    # Extra headers
+    while IFS= read -r hdr; do
+      [[ -n "$hdr" ]] || continue
+      val=$(q ".apis.$api.headers.\"$hdr\"")
+      echo "    request_header $hdr \"$(env_syntax "$val")\""
+    done < <(q ".apis.$api.headers // {} | keys | .[]")
+
+    # Reverse proxy
+    if [[ "$backend" == https://* ]]; then
+      host=${backend#https://}; host=${host%%/*}
+      echo "    reverse_proxy $backend {"
+      echo "      header_up Host $host"
+      echo "    }"
+    else
+      echo "    reverse_proxy $backend"
+    fi
+
+    echo "  }"
+  done
+
+  echo "  respond 404"
+  echo "}"
+} > Caddyfile
+
+# ── docker-compose.yml ─────────────────────────────────────
+{
+  cat <<-'EOF'
+	# Auto-generated — edit config.yaml, then run ./generate
+	services:
+	  router:
+	    image: caddy:2-alpine
+	    container_name: agent-api-firewall
+	    restart: unless-stopped
+	    ports: ["${VAULT_BIND:-127.0.0.1}:${VAULT_PORT:-8282}:8282"]
+	    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
+	    env_file: [.env]
+	    networks: [vault]
+	EOF
+
+  # depends_on for firewall services
+  deps=""
+  for api in "${APIS[@]}"; do
+    [[ -n "$(q ".apis.$api.spec // \"\"")" ]] && deps="$deps fw-$api"
+  done
+  if [[ -n "$deps" ]]; then
+    echo "    depends_on:"
+    for d in $deps; do echo "      $d: { condition: service_started }"; done
+  fi
+
+  # Wallarm firewall services
+  for api in "${APIS[@]}"; do
+    spec=$(q ".apis.$api.spec // \"\"")
+    [[ -z "$spec" ]] && continue
+    upstream=$(q ".apis.$api.upstream")
+
+    cat <<-EOF
+
+	  fw-$api:
+	    image: wallarm/api-firewall:v0.8.2
+	    container_name: agent-api-firewall-fw-$api
+	    restart: unless-stopped
+	    volumes: ["./$spec:/spec.yaml:ro"]
+	    environment:
+	      APIFW_URL: http://0.0.0.0:8080
+	      APIFW_API_SPECS: /spec.yaml
+	      APIFW_SERVER_URL: $upstream
+	      APIFW_REQUEST_VALIDATION: BLOCK
+	      APIFW_RESPONSE_VALIDATION: LOG_ONLY
+	      APIFW_CUSTOM_BLOCK_STATUS_CODE: "403"
+	      APIFW_LOG_FORMAT: JSON
+	      APIFW_LOG_LEVEL: INFO
+	    networks: [vault]
+	EOF
+  done
+
+  echo ""
+  echo "networks:"
+  echo "  vault:"
+} > docker-compose.yml
+
+echo "✅ Generated Caddyfile + docker-compose.yml (${#APIS[@]} APIs)"

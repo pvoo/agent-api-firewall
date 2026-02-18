@@ -1,0 +1,656 @@
+openapi: 3.0.1
+info:
+  title: Intercom API - Restricted
+  version: "2.11-restricted"
+  description: |
+    Restricted subset of Intercom API for AI agent access.
+    Only whitelisted endpoints and teams are accessible.
+    All unlisted endpoints are blocked by Wallarm API Firewall.
+
+servers:
+  - url: https://api.eu.intercom.io
+    description: EU region
+  - url: https://api.intercom.io
+    description: US region
+  - url: https://api.au.intercom.io
+    description: AU region
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ─── Identity ───────────────────────────────────────────────
+  /me:
+    get:
+      summary: Identify current admin
+      operationId: identifyAdmin
+      tags: [Admins]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      responses:
+        "200":
+          description: Current admin info
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ─── Admins ─────────────────────────────────────────────────
+  /admins:
+    get:
+      summary: List all admins
+      operationId: listAdmins
+      tags: [Admins]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      responses:
+        "200":
+          description: Admin list
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /admins/{admin_id}:
+    get:
+      summary: Retrieve an admin
+      operationId: retrieveAdmin
+      tags: [Admins]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: admin_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Admin details
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ─── Teams ──────────────────────────────────────────────────
+  /teams:
+    get:
+      summary: List all teams
+      operationId: listTeams
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      responses:
+        "200":
+          description: Team list
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /teams/{team_id}:
+    get:
+      summary: Retrieve a team
+      operationId: retrieveTeam
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: team_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Team details
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ─── Conversations (Search only — list blocked) ─────────────
+  /conversations/search:
+    post:
+      summary: Search conversations
+      operationId: searchConversations
+      tags: [Conversations]
+      description: |
+        Search conversations. The team_assignee_id filter is enforced
+        via schema validation to restrict access to allowed teams only.
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Conversation search results
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /conversations/{conversation_id}:
+    get:
+      summary: Retrieve a conversation
+      operationId: retrieveConversation
+      tags: [Conversations]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: display_as
+          in: query
+          schema:
+            type: string
+            enum: [plaintext]
+      responses:
+        "200":
+          description: Conversation details
+          content:
+            application/json:
+              schema:
+                type: object
+    put:
+      summary: Update a conversation
+      operationId: updateConversation
+      tags: [Conversations]
+      description: |
+        Update conversation attributes (e.g. mark read, snooze, assign).
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateConversationRequest"
+      responses:
+        "200":
+          description: Updated conversation
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /conversations/{conversation_id}/reply:
+    post:
+      summary: Reply to a conversation
+      operationId: replyConversation
+      tags: [Conversations]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplyRequest"
+      responses:
+        "200":
+          description: Reply added
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /conversations/{conversation_id}/parts:
+    post:
+      summary: Manage conversation parts (notes, assignments, close, open)
+      operationId: manageConversation
+      tags: [Conversations]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationPartRequest"
+      responses:
+        "200":
+          description: Action applied
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ─── Conversation Tags ──────────────────────────────────────
+  /conversations/{conversation_id}/tags:
+    post:
+      summary: Add tag to conversation
+      operationId: tagConversation
+      tags: [Conversations]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, admin_id]
+              properties:
+                id:
+                  type: string
+                  description: Tag ID
+                admin_id:
+                  type: string
+                  description: Admin ID performing the action
+      responses:
+        "200":
+          description: Tag added
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /conversations/{conversation_id}/tags/{tag_id}:
+    delete:
+      summary: Remove tag from conversation
+      operationId: untagConversation
+      tags: [Conversations]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: tag_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [admin_id]
+              properties:
+                admin_id:
+                  type: string
+      responses:
+        "200":
+          description: Tag removed
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ─── Contacts (read-only + search) ─────────────────────────
+  /contacts/{contact_id}:
+    get:
+      summary: Get a contact
+      operationId: getContact
+      tags: [Contacts]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: contact_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contact details
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /contacts/search:
+    post:
+      summary: Search contacts
+      operationId: searchContacts
+      tags: [Contacts]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Contact search results
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ─── Tags (read-only) ──────────────────────────────────────
+  /tags:
+    get:
+      summary: List all tags
+      operationId: listTags
+      tags: [Tags]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      responses:
+        "200":
+          description: Tag list
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ─── Articles (read-only) ───────────────────────────────────
+  /articles:
+    get:
+      summary: List all articles
+      operationId: listArticles
+      tags: [Articles]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            maximum: 250
+      responses:
+        "200":
+          description: Article list
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /articles/{article_id}:
+    get:
+      summary: Retrieve an article
+      operationId: getArticle
+      tags: [Articles]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: article_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Article details
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /articles/search:
+    get:
+      summary: Search articles
+      operationId: searchArticles
+      tags: [Articles]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: phrase
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [published, draft]
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ─── Companies (read-only) ──────────────────────────────────
+  /companies/{company_id}:
+    get:
+      summary: Retrieve a company
+      operationId: getCompany
+      tags: [Companies]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: company_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Company details
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ─── Tickets (read-only) ────────────────────────────────────
+  /tickets/{ticket_id}:
+    get:
+      summary: Retrieve a ticket
+      operationId: getTicket
+      tags: [Tickets]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Ticket details
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /tickets/search:
+    post:
+      summary: Search tickets
+      operationId: searchTickets
+      tags: [Tickets]
+      parameters:
+        - $ref: "#/components/parameters/IntercomVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Ticket search results
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    IntercomVersion:
+      name: Intercom-Version
+      in: header
+      schema:
+        type: string
+        enum:
+          - "2.11"
+        default: "2.11"
+
+  schemas:
+    # ─── Search ────────────────────────────────────────────────
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          oneOf:
+            - $ref: "#/components/schemas/SingleFilter"
+            - $ref: "#/components/schemas/MultipleFilter"
+        pagination:
+          type: object
+          properties:
+            per_page:
+              type: integer
+              minimum: 1
+              maximum: 150
+            starting_after:
+              type: string
+
+    SingleFilter:
+      type: object
+      required: [field, operator, value]
+      properties:
+        field:
+          type: string
+          description: Searchable field name
+        operator:
+          type: string
+          enum: ["=", "!=", "IN", "NIN", "<", ">", "~", "!~", "^", "$"]
+        value:
+          oneOf:
+            - type: string
+            - type: integer
+            - type: array
+              items:
+                oneOf:
+                  - type: string
+                  - type: integer
+          nullable: true
+
+    MultipleFilter:
+      type: object
+      required: [operator, value]
+      properties:
+        operator:
+          type: string
+          enum: ["AND", "OR"]
+        value:
+          type: array
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/SingleFilter"
+              - $ref: "#/components/schemas/MultipleFilter"
+          minItems: 1
+          maxItems: 15
+
+    # ─── Conversation Actions ──────────────────────────────────
+    ReplyRequest:
+      type: object
+      required: [message_type, type, body]
+      properties:
+        message_type:
+          type: string
+          enum: [comment, note]
+        type:
+          type: string
+          enum: [admin, user]
+        body:
+          type: string
+          maxLength: 10000
+        admin_id:
+          type: string
+        intercom_user_id:
+          type: string
+        attachment_urls:
+          type: array
+          items:
+            type: string
+            format: uri
+          maxItems: 10
+
+    UpdateConversationRequest:
+      type: object
+      properties:
+        read:
+          type: boolean
+        custom_attributes:
+          type: object
+
+    ConversationPartRequest:
+      type: object
+      required: [message_type, admin_id]
+      properties:
+        message_type:
+          type: string
+          enum: [note, close, open, assignment, snoozed]
+          description: Type of action
+        admin_id:
+          type: string
+          description: Admin performing the action
+        body:
+          type: string
+          maxLength: 10000
+          description: Note body or closing message
+        assignee_id:
+          type: string
+          description: Admin or team ID for assignment
+        type:
+          type: string
+          enum: [admin, team]
+          description: Assignee type (for assignments)
+        snoozed_until:
+          type: integer
+          description: UNIX timestamp to snooze until
+
+# ──────────────────────────────────────────────────────────────
+# BLOCKED ENDPOINTS (not in spec = auto-denied by Wallarm):
+#
+# - GET    /conversations           (list all — no team filter)
+# - DELETE /conversations/{id}      (destructive)
+# - POST   /conversations/{id}/customers (reassign customers)
+# - DELETE /conversations/{id}/customers/{id}
+# - POST   /conversations/{id}/run_assignment_rules
+# - POST   /conversations/redact
+# - POST   /conversations/{id}/convert
+# - POST   /contacts               (create contacts)
+# - PUT    /contacts/{id}           (update contacts)
+# - DELETE /contacts/{id}           (delete contacts)
+# - POST   /contacts/merge          (merge contacts)
+# - POST   /contacts/{id}/archive
+# - POST   /contacts/{id}/unarchive
+# - *      /data_attributes/*       (schema changes)
+# - *      /export/*                (bulk data export)
+# - *      /download/*              (bulk data download)
+# - *      /segments/*              (segment access)
+# - *      /subscription_types/*    (subscription changes)
+# - *      /phone_call_redirects/*  (phone redirects)
+# - *      /messages                (send new messages)
+# - *      /events/*                (events/analytics)
+# - *      /news/*                  (news items)
+# - *      /visitors/*              (visitor data)
+# ──────────────────────────────────────────────────────────────
