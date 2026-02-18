@@ -29,6 +29,10 @@ env_syntax() {
 
 LISTEN="$(q '.listen // ":8282"')"
 AUTH_HEADER="$(q '.auth.header // "X-Agent-Token"')"
+WALLARM_IMAGE="$(q '.wallarm.image // "wallarm/api-firewall:v0.9.5"')"
+WALLARM_SERVER_READ_BUFFER_SIZE="$(q '.wallarm.server_read_buffer_size // 65536')"
+WALLARM_SERVER_WRITE_BUFFER_SIZE="$(q '.wallarm.server_write_buffer_size // 16384')"
+WALLARM_READ_BUFFER_SIZE="$(q '.wallarm.read_buffer_size // 16384')"
 
 mapfile -t AGENTS < <(q '.agents | keys | .[]')
 mapfile -t APIS < <(q '.apis | keys | .[]')
@@ -199,7 +203,7 @@ EOF_COMPOSE
     cat <<EOF_FW
 
   fw-${api}-${policy}:
-    image: wallarm/api-firewall:v0.8.2
+    image: $WALLARM_IMAGE
     container_name: agent-api-firewall-fw-${api}-${policy}
     restart: unless-stopped
     volumes: ["./$spec:/spec.yaml:ro"]
@@ -207,6 +211,9 @@ EOF_COMPOSE
       APIFW_URL: http://0.0.0.0:8080
       APIFW_API_SPECS: /spec.yaml
       APIFW_SERVER_URL: $upstream
+      APIFW_SERVER_READ_BUFFER_SIZE: "$WALLARM_SERVER_READ_BUFFER_SIZE"
+      APIFW_SERVER_WRITE_BUFFER_SIZE: "$WALLARM_SERVER_WRITE_BUFFER_SIZE"
+      APIFW_READ_BUFFER_SIZE: "$WALLARM_READ_BUFFER_SIZE"
       APIFW_REQUEST_VALIDATION: BLOCK
       APIFW_RESPONSE_VALIDATION: LOG_ONLY
       APIFW_CUSTOM_BLOCK_STATUS_CODE: "403"

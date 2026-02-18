@@ -56,9 +56,10 @@ Run live tests:
 
 ## Configuration model
 
-`config.yaml` defines four things:
+`config.yaml` defines five things:
 
 - `auth.header`: request header used for agent tokens
+- `wallarm`: firewall image and runtime tuning
 - `agents`: token + API policy access per agent
 - `apis`: upstream credentials/headers/query auth
 - `apis.<api>.policies`: named policy profiles (`spec` optional)
@@ -69,6 +70,9 @@ Minimal example:
 listen: ":8282"
 auth:
   header: "X-Agent-Token"
+wallarm:
+  image: wallarm/api-firewall:v0.9.5
+  server_read_buffer_size: 65536
 
 agents:
   support:

@@ -16,6 +16,15 @@ auth:
   # Header checked per route against the configured agent token.
   header: "X-Agent-Token"
 
+wallarm:
+  # Stable release (not floating latest/develop)
+  image: wallarm/api-firewall:v0.9.5
+  # Intercom can return large response headers (e.g. CSP), so keep
+  # upstream read buffer comfortably above default.
+  server_read_buffer_size: 65536
+  server_write_buffer_size: 16384
+  read_buffer_size: 16384
+
 agents:
   support:
     token: "${AGENT_SUPPORT_TOKEN}"
