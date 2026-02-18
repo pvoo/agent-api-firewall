@@ -63,6 +63,7 @@ Run live tests:
 - `agents`: token + API policy access per agent
 - `apis`: upstream credentials/headers/query auth
 - `apis.<api>.policies`: named policy profiles (`spec` optional)
+- `apis.<api>.policies.<policy>.team_scope`: optional team filter override for Intercom-style specs
 
 Minimal example:
 
@@ -95,6 +96,10 @@ apis:
     policies:
       support:
         spec: specs/intercom-support.yaml
+        team_scope:
+          field: team_assignee_id
+          allowed_ids: [6979737, 7257201, 8589981]
+          allowed_names: [Support, Tickets, Test]
 ```
 
 ## Routes and usage
@@ -120,11 +125,17 @@ No upstream key is sent by the agent. Caddy injects it from host env.
 
 `./test` uses a probe header (`X-Agent-Firewall-Probe: 1`) for deterministic auth checks without relying on upstream API behavior.
 
+`team_scope` notes:
+
+- `field`: filter field required by the policy (for Intercom, usually `team_assignee_id`)
+- `allowed_ids`: integer allowlist used to render policy enum constraints
+- `allowed_names` (optional): human labels for docs/UI; defaults to stringified IDs
+
 ## Included policy packs
 
 - `specs/intercom-support.yaml`:
   - Support-safe Intercom subset
-  - Team-scoped search constraints (`query.field` must be `team_assignee_id`)
+  - Team-scoped search constraints (rendered from `config.yaml` `team_scope`)
   - No bulk export/download/contact mutation
 - `specs/openai-safe.yaml`:
   - Models, chat completions, embeddings, responses

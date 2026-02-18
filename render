@@ -27,6 +27,70 @@ env_syntax() {
   echo "$1" | sed 's/\${\([^}]*\)}/{env.\1}/g'
 }
 
+yq_apply() {
+  local expr="$1"
+  local file="$2"
+  local tmp
+  tmp="$(mktemp)"
+  yq -y "$expr" "$file" > "$tmp"
+  mv "$tmp" "$file"
+}
+
+apply_team_scope_policy() {
+  local api="$1"
+  local policy="$2"
+  local rendered_spec="$3"
+  local cfg_root=".apis.$api.policies.$policy"
+
+  local has_team_scope
+  has_team_scope="$(q "$cfg_root | has(\"team_scope\")")"
+  [[ "$has_team_scope" == "true" ]] || return 0
+
+  local field
+  field="$(q "$cfg_root.team_scope.field // \"team_assignee_id\"")"
+  [[ "$field" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "Invalid team scope field '$field' for $api/$policy"
+
+  local ids_len
+  ids_len="$(q "$cfg_root.team_scope.allowed_ids // [] | length")"
+  (( ids_len > 0 )) || die "team_scope.allowed_ids must be a non-empty list for $api/$policy"
+
+  local team_id
+  while IFS= read -r team_id; do
+    [[ "$team_id" =~ ^[0-9]+$ ]] || die "team_scope.allowed_ids must contain integers for $api/$policy (got '$team_id')"
+  done < <(q "$cfg_root.team_scope.allowed_ids[]")
+
+  local names_len
+  names_len="$(q "$cfg_root.team_scope.allowed_names // [] | length")"
+  if (( names_len > 0 && names_len != ids_len )); then
+    die "team_scope.allowed_names length must match allowed_ids for $api/$policy"
+  fi
+
+  yq_apply '.components.schemas.AllowedTeamId.enum = []' "$rendered_spec"
+  while IFS= read -r team_id; do
+    yq_apply ".components.schemas.AllowedTeamId.enum += [$team_id]" "$rendered_spec"
+  done < <(q "$cfg_root.team_scope.allowed_ids[]")
+
+  yq_apply '.components.schemas.AllowedTeamId["x-enumNames"] = []' "$rendered_spec"
+  if (( names_len > 0 )); then
+    local team_name escaped_name
+    while IFS= read -r team_name; do
+      escaped_name="${team_name//\\/\\\\}"
+      escaped_name="${escaped_name//\"/\\\"}"
+      yq_apply ".components.schemas.AllowedTeamId[\"x-enumNames\"] += [\"$escaped_name\"]" "$rendered_spec"
+    done < <(q "$cfg_root.team_scope.allowed_names[]")
+  else
+    while IFS= read -r team_id; do
+      yq_apply ".components.schemas.AllowedTeamId[\"x-enumNames\"] += [\"$team_id\"]" "$rendered_spec"
+    done < <(q "$cfg_root.team_scope.allowed_ids[]")
+  fi
+
+  local escaped_field
+  escaped_field="${field//\\/\\\\}"
+  escaped_field="${escaped_field//\"/\\\"}"
+  yq_apply ".components.schemas.TeamFilterEquals.properties.field.enum = [\"$escaped_field\"]" "$rendered_spec"
+  yq_apply ".components.schemas.TeamFilterIn.properties.field.enum = [\"$escaped_field\"]" "$rendered_spec"
+}
+
 LISTEN="$(q '.listen // ":8282"')"
 AUTH_HEADER="$(q '.auth.header // "X-Agent-Token"')"
 WALLARM_IMAGE="$(q '.wallarm.image // "wallarm/api-firewall:v0.9.5"')"
@@ -42,9 +106,11 @@ mapfile -t APIS < <(q '.apis | keys | .[]')
 
 # route records: agent|token|api|policy|spec|upstream
 declare -a ROUTES=()
+declare -A FW_SPEC_SOURCES=()
 declare -A FW_SPECS=()
 declare -A FW_UPSTREAMS=()
 declare -A ROUTE_GUARD=()
+GEN_SPEC_DIR=".generated/specs"
 
 for api in "${APIS[@]}"; do
   is_valid_name "$api" || die "Invalid API name '$api'"
@@ -91,10 +157,22 @@ for agent in "${AGENTS[@]}"; do
     if [[ -n "$spec" ]]; then
       [[ -f "$spec" ]] || die "Spec file not found for $api/$policy: $spec"
       fw_key="$api|$policy"
-      FW_SPECS[$fw_key]="$spec"
+      FW_SPEC_SOURCES[$fw_key]="$spec"
       FW_UPSTREAMS[$fw_key]="$api_upstream"
     fi
   done
+done
+
+mkdir -p "$GEN_SPEC_DIR"
+mapfile -t FW_KEYS < <(printf "%s\n" "${!FW_SPEC_SOURCES[@]}" | sort)
+for key in "${FW_KEYS[@]}"; do
+  IFS='|' read -r api policy <<<"$key"
+  source_spec="${FW_SPEC_SOURCES[$key]}"
+  rendered_spec="$GEN_SPEC_DIR/${api}-${policy}.yaml"
+
+  cp "$source_spec" "$rendered_spec"
+  apply_team_scope_policy "$api" "$policy" "$rendered_spec"
+  FW_SPECS[$key]="$rendered_spec"
 done
 
 # Generate Caddyfile

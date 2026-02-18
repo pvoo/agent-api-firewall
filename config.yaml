@@ -55,6 +55,10 @@ apis:
     policies:
       support:
         spec: specs/intercom-support.yaml
+        team_scope:
+          field: team_assignee_id
+          allowed_ids: [6979737, 7257201, 8589981]
+          allowed_names: [Support, Tickets, Test]
 
   openai:
     upstream: https://api.openai.com

@@ -67,6 +67,60 @@ resolve_token() {
   fi
 }
 
+check_team_scope_render() {
+  local found=0
+  local api
+  local -a APIS=()
+  mapfile -t APIS < <(yq -r '.apis | keys | .[]' config.yaml)
+  for api in "${APIS[@]}"; do
+    local policy
+    local -a POLICIES=()
+    mapfile -t POLICIES < <(yq -r ".apis.$api.policies | keys | .[]" config.yaml)
+    for policy in "${POLICIES[@]}"; do
+      local has_team_scope
+      has_team_scope="$(yq -r ".apis.$api.policies.$policy | has(\"team_scope\")" config.yaml)"
+      [[ "$has_team_scope" == "true" ]] || continue
+      found=1
+
+      local rendered=".generated/specs/${api}-${policy}.yaml"
+      if [[ ! -f "$rendered" ]]; then
+        echo "FAIL: missing rendered spec for team_scope policy $api/$policy ($rendered)"
+        fail=$((fail + 1))
+        continue
+      fi
+
+      local cfg_field
+      cfg_field="$(yq -r ".apis.$api.policies.$policy.team_scope.field // \"team_assignee_id\"" config.yaml)"
+      local spec_field
+      spec_field="$(yq -r '.components.schemas.TeamFilterEquals.properties.field.enum[0] // ""' "$rendered")"
+      if [[ "$cfg_field" == "$spec_field" ]]; then
+        echo "PASS: team_scope field rendered for $api/$policy"
+        pass=$((pass + 1))
+      else
+        echo "FAIL: team_scope field mismatch for $api/$policy (config=$cfg_field, spec=$spec_field)"
+        fail=$((fail + 1))
+      fi
+
+      local cfg_ids
+      cfg_ids="$(yq -r ".apis.$api.policies.$policy.team_scope.allowed_ids // [] | join(\",\")" config.yaml)"
+      local spec_ids
+      spec_ids="$(yq -r '.components.schemas.AllowedTeamId.enum // [] | join(",")' "$rendered")"
+      if [[ "$cfg_ids" == "$spec_ids" ]]; then
+        echo "PASS: team_scope ids rendered for $api/$policy"
+        pass=$((pass + 1))
+      else
+        echo "FAIL: team_scope ids mismatch for $api/$policy (config=$cfg_ids, spec=$spec_ids)"
+        fail=$((fail + 1))
+      fi
+    done
+  done
+
+  if [[ "$found" == "0" ]]; then
+    echo "SKIP: no team_scope policy configured"
+    skip=$((skip + 1))
+  fi
+}
+
 echo "== Agent API Firewall live tests =="
 echo "URL: $URL"
 
@@ -79,6 +133,8 @@ else
   echo "FAIL: unknown route expected 404, got $root_code"
   fail=$((fail + 1))
 fi
+
+check_team_scope_render
 
 mapfile -t AGENTS < <(yq -r '.agents | keys | .[]' config.yaml)
 
