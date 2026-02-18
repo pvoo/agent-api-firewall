@@ -4,13 +4,20 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+CONFIG_FILE="${FIREWALL_CONFIG_FILE:-config.yaml}"
+[[ -f "$CONFIG_FILE" ]] || {
+  echo "ERROR: config file not found: $CONFIG_FILE" >&2
+  exit 1
+}
+CONFIG_DIR="$(cd "$(dirname "$CONFIG_FILE")" && pwd)"
+
 command -v yq >/dev/null 2>&1 || {
   echo "ERROR: yq v4+ is required: https://github.com/mikefarah/yq" >&2
   exit 1
 }
 
 q() {
-  yq -r "$1" config.yaml
+  yq -r "$1" "$CONFIG_FILE"
 }
 
 die() {
@@ -34,6 +41,19 @@ yq_apply() {
   tmp="$(mktemp)"
   yq -y "$expr" "$file" > "$tmp"
   mv "$tmp" "$file"
+}
+
+resolve_from_config_dir() {
+  local path="$1"
+  if [[ "$path" = /* ]]; then
+    echo "$path"
+  elif [[ -f "$path" ]]; then
+    echo "$path"
+  elif [[ -f "$CONFIG_DIR/$path" ]]; then
+    echo "$CONFIG_DIR/$path"
+  else
+    echo "$CONFIG_DIR/$path"
+  fi
 }
 
 apply_team_scope_policy() {
@@ -101,8 +121,8 @@ WALLARM_READ_BUFFER_SIZE="$(q '.wallarm.read_buffer_size // 16384')"
 mapfile -t AGENTS < <(q '.agents | keys | .[]')
 mapfile -t APIS < <(q '.apis | keys | .[]')
 
-[[ ${#AGENTS[@]} -gt 0 ]] || die "No agents defined in config.yaml"
-[[ ${#APIS[@]} -gt 0 ]] || die "No apis defined in config.yaml"
+[[ ${#AGENTS[@]} -gt 0 ]] || die "No agents defined in $CONFIG_FILE"
+[[ ${#APIS[@]} -gt 0 ]] || die "No apis defined in $CONFIG_FILE"
 
 # route records: agent|token|api|policy|spec|upstream
 declare -a ROUTES=()
@@ -155,9 +175,10 @@ for agent in "${AGENTS[@]}"; do
     ROUTES+=("$agent|$token|$api|$policy|$spec|$api_upstream")
 
     if [[ -n "$spec" ]]; then
-      [[ -f "$spec" ]] || die "Spec file not found for $api/$policy: $spec"
+      spec_src="$(resolve_from_config_dir "$spec")"
+      [[ -f "$spec_src" ]] || die "Spec file not found for $api/$policy: $spec (resolved: $spec_src)"
       fw_key="$api|$policy"
-      FW_SPEC_SOURCES[$fw_key]="$spec"
+      FW_SPEC_SOURCES[$fw_key]="$spec_src"
       FW_UPSTREAMS[$fw_key]="$api_upstream"
     fi
   done
@@ -178,7 +199,7 @@ done
 # Generate Caddyfile
 {
   cat <<EOF_HEADER
-# Auto-generated. Edit config.yaml, then run ./render
+# Auto-generated. Edit $CONFIG_FILE, then run ./render
 {
   auto_https off
   admin off
@@ -251,7 +272,7 @@ EOF_FOOTER
 # Generate docker-compose.yml
 {
   cat <<'EOF_COMPOSE'
-# Auto-generated. Edit config.yaml, then run ./render
+# Auto-generated. Edit source config, then run ./render
 services:
   router:
     image: caddy:2.8.4-alpine
@@ -259,7 +280,7 @@ services:
     restart: unless-stopped
     ports: ["${VAULT_BIND:-127.0.0.1}:${VAULT_PORT:-8282}:8282"]
     volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
-    env_file: [.env]
+    env_file: ["${FIREWALL_ENV_FILE:-.env}"]
     networks: [vault]
 EOF_COMPOSE
 

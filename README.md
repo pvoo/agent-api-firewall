@@ -48,6 +48,13 @@ Render and run:
 docker compose up -d
 ```
 
+Optional (shared host env + local config outside this repo):
+
+```bash
+FIREWALL_CONFIG_FILE=/path/to/local/config.yaml ./render
+FIREWALL_ENV_FILE=/path/to/shared/.env docker compose up -d
+```
+
 Run live tests:
 
 ```bash
@@ -64,6 +71,11 @@ Run live tests:
 - `apis`: upstream credentials/headers/query auth
 - `apis.<api>.policies`: named policy profiles (`spec` optional)
 - `apis.<api>.policies.<policy>.team_scope`: optional team filter override for Intercom-style specs
+
+Renderer/runtime env options:
+
+- `FIREWALL_CONFIG_FILE`: use a custom config file path (default: `config.yaml`)
+- `FIREWALL_ENV_FILE`: env file path injected into router service compose (default: `.env`)
 
 Minimal example:
 
