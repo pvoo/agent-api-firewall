@@ -34,6 +34,12 @@ agents:
       - api: openai
         policy: safe
 
+  sales:
+    token: "${AGENT_SALES_TOKEN}"
+    access:
+      - api: intercom
+        policy: support
+
   research:
     token: "${AGENT_RESEARCH_TOKEN}"
     access:

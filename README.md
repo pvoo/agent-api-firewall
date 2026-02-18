@@ -39,7 +39,7 @@ cp .env.example .env
 Populate `.env`:
 
 - Upstream credentials (`INTERCOM_TOKEN`, `OPENAI_API_KEY`, ...)
-- Agent tokens (`AGENT_SUPPORT_TOKEN`, ...)
+- Agent tokens (`AGENT_SUPPORT_TOKEN`, `AGENT_SALES_TOKEN`, ...)
 
 Render and run:
 
@@ -80,6 +80,11 @@ agents:
     access:
       - api: intercom
         policy: support
+  sales:
+    token: "${AGENT_SALES_TOKEN}"
+    access:
+      - api: intercom
+        policy: support
 
 apis:
   intercom:
@@ -94,11 +99,11 @@ apis:
 
 ## Routes and usage
 
-If `support` has access to `intercom`, call:
+If `sales` has access to `intercom`, call:
 
 ```bash
-curl "http://localhost:8282/support/intercom/me" \
-  -H "X-Agent-Token: $AGENT_SUPPORT_TOKEN"
+curl "http://localhost:8282/sales/intercom/me" \
+  -H "X-Agent-Token: $AGENT_SALES_TOKEN"
 ```
 
 No upstream key is sent by the agent. Caddy injects it from host env.
@@ -119,7 +124,7 @@ No upstream key is sent by the agent. Caddy injects it from host env.
 
 - `specs/intercom-support.yaml`:
   - Support-safe Intercom subset
-  - Team-scoped search constraints
+  - Team-scoped search constraints (`query.field` must be `team_assignee_id`)
   - No bulk export/download/contact mutation
 - `specs/openai-safe.yaml`:
   - Models, chat completions, embeddings, responses

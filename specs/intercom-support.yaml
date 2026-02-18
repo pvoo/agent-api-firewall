@@ -284,6 +284,8 @@ components:
   schemas:
     AllowedTeamId:
       type: integer
+      description: Approved Intercom team ids for this policy (Support, Tickets, Test).
+      x-enumNames: [Support, Tickets, Test]
       enum:
         - 6979737
         - 7257201
@@ -322,6 +324,21 @@ components:
           items:
             $ref: "#/components/schemas/AllowedTeamId"
 
+    TeamFilterGroup:
+      type: object
+      additionalProperties: false
+      required: [operator, value]
+      properties:
+        operator:
+          type: string
+          enum: [OR, AND]
+        value:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/TeamFilterEquals"
+
     TeamScopedSearchRequest:
       type: object
       additionalProperties: false
@@ -331,6 +348,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/TeamFilterEquals"
             - $ref: "#/components/schemas/TeamFilterIn"
+            - $ref: "#/components/schemas/TeamFilterGroup"
         pagination:
           type: object
           additionalProperties: false
