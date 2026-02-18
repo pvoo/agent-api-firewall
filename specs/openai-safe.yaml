@@ -1,0 +1,217 @@
+openapi: 3.0.1
+info:
+  title: OpenAI Safe Policy
+  version: "1.0.0"
+  description: |
+    Restricted subset of OpenAI API for agent workflows.
+
+    Allowed:
+    - Model listing/inspect
+    - Chat completions
+    - Embeddings
+    - Responses API
+
+    Blocked by omission:
+    - Files, fine-tuning, assistants, images, vector stores, batches
+
+servers:
+  - url: https://api.openai.com
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/models:
+    get:
+      summary: List models
+      operationId: listModels
+      responses:
+        "200":
+          description: Model list
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /v1/models/{model}:
+    get:
+      summary: Retrieve model
+      operationId: getModel
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Model detail
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /v1/chat/completions:
+    post:
+      summary: Create chat completion
+      operationId: createChatCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatCompletionRequest"
+      responses:
+        "200":
+          description: Chat completion response
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /v1/embeddings:
+    post:
+      summary: Create embedding vectors
+      operationId: createEmbeddings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbeddingRequest"
+      responses:
+        "200":
+          description: Embeddings response
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /v1/responses:
+    post:
+      summary: Create response
+      operationId: createResponse
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResponseRequest"
+      responses:
+        "200":
+          description: Responses API object
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    Message:
+      type: object
+      additionalProperties: true
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool, function]
+        content:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+
+    ChatCompletionRequest:
+      type: object
+      additionalProperties: false
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/Message"
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+        n:
+          type: integer
+          minimum: 1
+          maximum: 5
+        stream:
+          type: boolean
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 16384
+        max_completion_tokens:
+          type: integer
+          minimum: 1
+          maximum: 16384
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              minItems: 1
+              maxItems: 8
+              items:
+                type: string
+
+    EmbeddingRequest:
+      type: object
+      additionalProperties: false
+      required: [model, input]
+      properties:
+        model:
+          type: string
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              minItems: 1
+              maxItems: 256
+              items:
+                oneOf:
+                  - type: string
+                  - type: integer
+                  - type: number
+
+    ResponseRequest:
+      type: object
+      additionalProperties: false
+      required: [model, input]
+      properties:
+        model:
+          type: string
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+        instructions:
+          type: string
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        max_output_tokens:
+          type: integer
+          minimum: 1
+          maximum: 16384
+        stream:
+          type: boolean

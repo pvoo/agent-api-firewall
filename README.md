@@ -1,190 +1,147 @@
-# 🛡️ Agent API Firewall
+# Agent API Firewall
 
-OpenAPI-based request firewall for AI agents, powered by [Wallarm API Firewall](https://github.com/wallarm/api-firewall).
+Policy-driven API gateway for AI agents, powered by [Wallarm API Firewall](https://github.com/wallarm/api-firewall).
 
+## Why this project
+
+This project keeps upstream API keys on the host and gives agents controlled access through:
+
+- Agent-specific routes: `/<agent>/<api>/*`
+- Agent tokens (`X-Agent-Token` by default)
+- OpenAPI policy profiles (allowlist, default deny)
+
+Result: one reusable firewall that supports different agent permissions without hardcoding provider logic.
+
+## Architecture
+
+```text
+Agent (no upstream keys)
+  -> Agent API Firewall (Caddy + Wallarm)
+    -> External APIs
 ```
-Agent (no keys) ──▶ Agent API Firewall ──▶ External APIs
-                    │                       
-                    ├ Wallarm validates against OpenAPI spec (unlisted = 403)
-                    ├ Caddy injects auth + routes by path prefix
-                    └ Keys never leave the host
-```
 
-## What This Does
+Request flow:
 
-**[Wallarm API Firewall](https://github.com/wallarm/api-firewall)** is the enforcement engine — it validates every request against an OpenAPI spec and blocks anything not explicitly allowed. This repo wraps it with:
+1. Route lookup by `/<agent>/<api>/*`
+2. Agent token validation
+3. Policy enforcement (if `spec` configured)
+4. Upstream auth/header injection
+5. Forward to provider
 
-- **Auth injection** — credentials live in `.env`, injected per-API by Caddy
-- **Path routing** — `/openai/*` → OpenAI, `/intercom/*` → Intercom, etc.
-- **Config generator** — one `config.yaml` produces the full Docker Compose stack
-
-You write an OpenAPI spec that acts as an **allowlist**. Wallarm blocks the rest.
-
-## Quick Start
+## Quick start
 
 ```bash
 git clone https://github.com/pvoo/agent-api-firewall.git
 cd agent-api-firewall
+cp .env.example .env
 ```
 
-1. **Add your API keys**
-   ```bash
-   cp .env.example .env
-   vi .env                        # add INTERCOM_TOKEN, OPENAI_API_KEY, etc.
-   ```
+Populate `.env`:
 
-2. **Review `config.yaml`** — two sample APIs included (Intercom, OpenAI)
+- Upstream credentials (`INTERCOM_TOKEN`, `OPENAI_API_KEY`, ...)
+- Agent tokens (`AGENT_SUPPORT_TOKEN`, ...)
 
-3. **Generate + start**
-   ```bash
-   ./render                       # config.yaml → Caddyfile + docker-compose.yml
-   docker compose up -d
-   ```
+Render and run:
 
-4. **Verify**
-   ```bash
-   ./test                         # runs allow/block checks against live proxy
-   ```
-
-5. **Use from your agent**
-   ```bash
-   # No API key needed — the proxy injects it
-   curl http://localhost:8282/openai/v1/models
-   ```
-
-## How It Works
-
-```
-config.yaml          ─── ./render ───▶  Caddyfile
-  + specs/*.yaml                        docker-compose.yml
-  + .env                                  │
-                                          ▼
-                              ┌─────────────────────┐
-                              │  Caddy (router)      │ :8282
-                              │  ├ /openai/*         │
-                              │  └ /intercom/*       │
-                              └──────┬──────┬────────┘
-                                     │      │
-                              ┌──────▼──┐ ┌─▼────────┐
-                              │ Wallarm  │ │ Wallarm   │
-                              │ (OpenAI  │ │(Intercom  │
-                              │  spec)   │ │ spec)     │
-                              └──────┬───┘ └─┬────────┘
-                                     │       │
-                              ┌──────▼───────▼────────┐
-                              │   External APIs        │
-                              └────────────────────────┘
+```bash
+./render
+docker compose up -d
 ```
 
-- **Caddy** handles routing (path prefix → backend), auth header injection, and TLS
-- **Wallarm API Firewall** (one container per spec) validates requests against the OpenAPI spec — anything not listed returns 403
-- APIs without a `spec:` get pass-through (auth injection only, no validation)
+Run live tests:
 
-## Configuration
+```bash
+./test
+```
 
-### config.yaml
+## Configuration model
+
+`config.yaml` defines four things:
+
+- `auth.header`: request header used for agent tokens
+- `agents`: token + API policy access per agent
+- `apis`: upstream credentials/headers/query auth
+- `apis.<api>.policies`: named policy profiles (`spec` optional)
+
+Minimal example:
 
 ```yaml
 listen: ":8282"
+auth:
+  header: "X-Agent-Token"
+
+agents:
+  support:
+    token: "${AGENT_SUPPORT_TOKEN}"
+    access:
+      - api: intercom
+        policy: support
 
 apis:
   intercom:
-    upstream: https://api.eu.intercom.io
+    upstream: https://api.intercom.io
     auth: "Bearer ${INTERCOM_TOKEN}"
     headers:
-      Intercom-Version: "2.11"
-    spec: specs/intercom.yaml          # ← Wallarm validates against this
-
-  openai:
-    upstream: https://api.openai.com
-    auth: "Bearer ${OPENAI_API_KEY}"
-    spec: specs/openai.yaml
+      Intercom-Version: "2.14"
+    policies:
+      support:
+        spec: specs/intercom-support.yaml
 ```
 
-### Auth Methods
+## Routes and usage
 
-```yaml
-auth: "Bearer ${TOKEN}"          # Authorization header (Bearer)
-auth: "${API_KEY}"                # Authorization header (plain)
+If `support` has access to `intercom`, call:
 
-auth_query:                       # Query parameter
-  api_key: "${KEY}"               # → ?api_key=<value>
-
-headers:                          # Extra headers
-  X-Custom: "value"
+```bash
+curl "http://localhost:8282/support/intercom/me" \
+  -H "X-Agent-Token: $AGENT_SUPPORT_TOKEN"
 ```
 
-## Writing OpenAPI Specs (Security Policy)
+No upstream key is sent by the agent. Caddy injects it from host env.
 
-The OpenAPI spec **is** your security policy. Only paths and methods listed in the spec are allowed — everything else is blocked by Wallarm.
+## Testing
 
-### Example: Team-Scoped Access
+`./test` validates:
 
-The included Intercom spec restricts conversation search to specific teams:
+- Unknown routes return `404`
+- Missing/wrong token returns `401`
+- Correct token reaches authorized route
+- Spec-backed policies block unknown endpoints (`403`)
+- Cross-agent token isolation
 
-```yaml
-# specs/intercom.yaml (excerpt)
-paths:
-  /conversations/search:
-    post:
-      requestBody:
-        content:
-          application/json:
-            schema:
-              properties:
-                query:
-                  properties:
-                    field:
-                      type: string
-                    operator:
-                      type: string
-                    value:
-                      type: string
-              # Wallarm validates the body structure
+`./test` uses a probe header (`X-Agent-Firewall-Probe: 1`) for deterministic auth checks without relying on upstream API behavior.
+
+## Included policy packs
+
+- `specs/intercom-support.yaml`:
+  - Support-safe Intercom subset
+  - Team-scoped search constraints
+  - No bulk export/download/contact mutation
+- `specs/openai-safe.yaml`:
+  - Models, chat completions, embeddings, responses
+  - Sensitive endpoints blocked by omission
+
+## Project layout
+
+```text
+.
+├── config.yaml
+├── .env.example
+├── render
+├── test
+├── specs/
+│   ├── intercom-support.yaml
+│   └── openai-safe.yaml
+├── Caddyfile              # generated
+└── docker-compose.yml     # generated
 ```
 
-Combined with **not listing** `/conversations` (list all), agents can only search — never browse all conversations. Add `enum` constraints on fields like `team_assignee_id` to limit which teams are visible.
+## Security notes
 
-### Tips
-
-- Start restrictive, add endpoints as needed
-- Use `additionalProperties: false` on request bodies for strict enforcement
-- Comment blocked endpoints at the bottom of the spec for documentation
-
-## Adding a New API
-
-1. Add entry to `config.yaml` (upstream + auth)
-2. Add credentials to `.env`
-3. Write an OpenAPI spec in `specs/` (or omit `spec:` for pass-through)
-4. `./render && docker compose up -d`
-5. Add test cases to `./test`
-
-## Included Specs
-
-| API | Allowed | Blocked |
-|-----|---------|---------|
-| **Intercom** | Search/read/reply conversations, contacts, articles, teams | Delete, export, create contacts, send messages, list all conversations |
-| **OpenAI** | Chat completions, embeddings, audio, models | Fine-tuning, files, images, assistants |
-
-## Security
-
-- Binds to **localhost only** by default (`VAULT_BIND=127.0.0.1`)
-- See [SECURITY.md](SECURITY.md) for hardening checklist
-
-## Requirements
-
-- Docker (Compose v2)
-- [yq v4+](https://github.com/mikefarah/yq)
-
-## Contributing
-
-- `./render` and check the generated files
-- `./test` against a running proxy
-- Don't commit `.env`, `Caddyfile`, or `docker-compose.yml` (generated)
-
-## Author
-
-Paul van Oorschot — [@pvoo](https://github.com/pvoo)
+- Default bind is localhost-only (`127.0.0.1`)
+- Keep `.env` private and out of version control
+- Prefer spec-backed policies for all sensitive APIs
+- See `SECURITY.md` for hardening guidance
 
 ## License
 

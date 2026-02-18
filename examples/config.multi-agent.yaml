@@ -1,19 +1,5 @@
-# Agent API Firewall configuration
-#
-# Route format:
-#   /<agent>/<api>/*
-#
-# Request flow:
-#   Agent token check (header) -> optional OpenAPI policy validation -> upstream API
-#
-# Default behavior is deny-by-omission:
-# - If agent/api/policy is not defined here, route does not exist.
-# - If policy has a spec, unlisted endpoints/methods are blocked by Wallarm.
-
 listen: ":8282"
-
 auth:
-  # Header checked per route against the configured agent token.
   header: "X-Agent-Token"
 
 agents:
