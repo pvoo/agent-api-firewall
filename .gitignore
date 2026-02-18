@@ -1,3 +1,4 @@
 .env
 Caddyfile
 docker-compose.yml
+.generated/
