@@ -63,14 +63,18 @@ Run live tests:
 
 ## Configuration model
 
-`config.yaml` defines five things:
+`config.yaml` defines:
 
+- `listen`: proxy listen address (default: `:8282`)
+- `network`: Docker network name (default: `vault`)
 - `auth.header`: request header used for agent tokens
 - `wallarm`: firewall image and runtime tuning
 - `agents`: token + API policy access per agent
 - `apis`: upstream credentials/headers/query auth
 - `apis.<api>.policies`: named policy profiles (`spec` optional)
-- `apis.<api>.policies.<policy>.team_scope`: optional team filter override for Intercom-style specs
+- `apis.<api>.policies.<policy>.response_validation`: `BLOCK`, `LOG_ONLY` (default), or `DISABLE`
+- `apis.<api>.policies.<policy>.team_scope`: backward-compat team filter shorthand for Intercom-style specs
+- `apis.<api>.policies.<policy>.enum_overrides`: generic enum constraint overrides for any spec schema
 
 Renderer/runtime env options:
 
@@ -81,6 +85,7 @@ Minimal example:
 
 ```yaml
 listen: ":8282"
+network: vault
 auth:
   header: "X-Agent-Token"
 wallarm:
@@ -108,6 +113,7 @@ apis:
     policies:
       support:
         spec: specs/intercom-support.yaml
+        response_validation: LOG_ONLY
         team_scope:
           field: team_assignee_id
           allowed_ids: [6979737, 7257201, 8589981]
@@ -142,6 +148,25 @@ No upstream key is sent by the agent. Caddy injects it from host env.
 - `field`: filter field required by the policy (for Intercom, usually `team_assignee_id`)
 - `allowed_ids`: integer allowlist used to render policy enum constraints
 - `allowed_names` (optional): human labels for docs/UI; defaults to stringified IDs
+
+`enum_overrides` -- generic alternative to `team_scope` that works with any spec:
+
+```yaml
+enum_overrides:
+  AllowedTeamId:                          # schema name under components.schemas
+    values: [6979737, 7257201]            # required, sets .enum
+    names: [Support, Tickets]             # optional, sets .x-enumNames
+  TeamFilterEquals.properties.field:      # dots = path traversal in spec
+    values: [team_assignee_id]
+```
+
+Processing order: `team_scope` expands first, then `enum_overrides` (overrides win on conflicts).
+
+`response_validation`: controls how the Wallarm firewall handles API responses.
+
+- `LOG_ONLY` (default): log but pass through non-conforming responses
+- `BLOCK`: reject responses that don't match the spec
+- `DISABLE`: skip response validation entirely
 
 ## Included policy packs
 
