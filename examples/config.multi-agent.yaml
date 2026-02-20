@@ -1,4 +1,5 @@
 listen: ":8282"
+network: vault
 auth:
   header: "X-Agent-Token"
 
@@ -26,6 +27,7 @@ apis:
     policies:
       support:
         spec: specs/intercom-support.yaml
+        response_validation: LOG_ONLY
         team_scope:
           field: team_assignee_id
           allowed_ids: [6979737, 7257201, 8589981]
@@ -37,3 +39,4 @@ apis:
     policies:
       safe:
         spec: specs/openai-safe.yaml
+        response_validation: LOG_ONLY

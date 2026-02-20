@@ -3,12 +3,15 @@ info:
   title: Intercom Support Policy
   version: "1.0.0"
   description: |
-    Restricted Intercom policy for support/ticket workflows.
+    Restricted Intercom policy template for support/ticket workflows.
 
     Key constraints:
     - Team-scoped conversation/ticket search only.
     - No contact/company creation or mutation.
     - No bulk export/download endpoints.
+
+    Note: AllowedTeamId.enum and TeamFilter*.field.enum contain placeholders.
+    The render script replaces them with real values from config (team_scope or enum_overrides).
 
 servers:
   - url: https://api.intercom.io
@@ -284,12 +287,10 @@ components:
   schemas:
     AllowedTeamId:
       type: integer
-      description: Approved Intercom team ids for this policy (rendered from config team_scope when set).
-      x-enumNames: [Support, Tickets, Test]
+      description: Approved team ids for this policy (rendered from config).
+      x-enumNames: [placeholder]
       enum:
-        - 6979737
-        - 7257201
-        - 8589981
+        - 0
 
     TeamFilterEquals:
       type: object
@@ -298,7 +299,7 @@ components:
       properties:
         field:
           type: string
-          enum: [team_assignee_id]
+          enum: [placeholder]
         operator:
           type: string
           enum: ["="]
@@ -312,7 +313,7 @@ components:
       properties:
         field:
           type: string
-          enum: [team_assignee_id]
+          enum: [placeholder]
         operator:
           type: string
           enum: [IN]

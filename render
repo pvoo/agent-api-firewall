@@ -56,7 +56,9 @@ resolve_from_config_dir() {
   fi
 }
 
-apply_team_scope_policy() {
+expand_team_scope() {
+  # Backward-compat shim: converts team_scope config into enum_overrides-style
+  # writes directly to the rendered spec, same output as the old apply_team_scope_policy().
   local api="$1"
   local policy="$2"
   local rendered_spec="$3"
@@ -85,11 +87,13 @@ apply_team_scope_policy() {
     die "team_scope.allowed_names length must match allowed_ids for $api/$policy"
   fi
 
+  # AllowedTeamId.enum
   yq_apply '.components.schemas.AllowedTeamId.enum = []' "$rendered_spec"
   while IFS= read -r team_id; do
     yq_apply ".components.schemas.AllowedTeamId.enum += [$team_id]" "$rendered_spec"
   done < <(q "$cfg_root.team_scope.allowed_ids[]")
 
+  # AllowedTeamId.x-enumNames
   yq_apply '.components.schemas.AllowedTeamId["x-enumNames"] = []' "$rendered_spec"
   if (( names_len > 0 )); then
     local team_name escaped_name
@@ -104,6 +108,7 @@ apply_team_scope_policy() {
     done < <(q "$cfg_root.team_scope.allowed_ids[]")
   fi
 
+  # TeamFilter*.field.enum
   local escaped_field
   escaped_field="${field//\\/\\\\}"
   escaped_field="${escaped_field//\"/\\\"}"
@@ -111,8 +116,77 @@ apply_team_scope_policy() {
   yq_apply ".components.schemas.TeamFilterIn.properties.field.enum = [\"$escaped_field\"]" "$rendered_spec"
 }
 
+apply_enum_overrides() {
+  # Generic mechanism: reads enum_overrides from config and sets .enum / .x-enumNames
+  # on any schema path under components.schemas.
+  #
+  # Config syntax:
+  #   enum_overrides:
+  #     AllowedTeamId:                          # schema name
+  #       values: [6979737, 7257201]
+  #       names: [Support, Tickets]             # optional
+  #     TeamFilterEquals.properties.field:      # dots = path traversal in spec
+  #       values: [team_assignee_id]
+  #
+  # Keys with dots are read literally from config (bracket notation),
+  # then dots become path separators when writing to the spec.
+  local api="$1"
+  local policy="$2"
+  local rendered_spec="$3"
+  local cfg_root=".apis.$api.policies.$policy"
+
+  local has_overrides
+  has_overrides="$(q "$cfg_root | has(\"enum_overrides\")")"
+  [[ "$has_overrides" == "true" ]] || return 0
+
+  local override_key
+  while IFS= read -r override_key; do
+    [[ -n "$override_key" ]] || continue
+
+    # Read from config using bracket notation (key may contain dots)
+    local values_len
+    values_len="$(q "$cfg_root.enum_overrides[\"$override_key\"].values // [] | length")"
+    (( values_len > 0 )) || die "enum_overrides[\"$override_key\"].values must be a non-empty list for $api/$policy"
+
+    # Convert dotted key to yq path under .components.schemas
+    local spec_path=".components.schemas.${override_key//\./.}"
+
+    # Set .enum -- build the array from config values
+    yq_apply "$spec_path.enum = []" "$rendered_spec"
+    local val
+    while IFS= read -r val; do
+      # Try to add as number if it looks numeric, else as string
+      if [[ "$val" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+        yq_apply "$spec_path.enum += [$val]" "$rendered_spec"
+      else
+        local escaped_val
+        escaped_val="${val//\\/\\\\}"
+        escaped_val="${escaped_val//\"/\\\"}"
+        yq_apply "$spec_path.enum += [\"$escaped_val\"]" "$rendered_spec"
+      fi
+    done < <(q "$cfg_root.enum_overrides[\"$override_key\"].values[]")
+
+    # Set .x-enumNames if provided
+    local names_len
+    names_len="$(q "$cfg_root.enum_overrides[\"$override_key\"].names // [] | length")"
+    if (( names_len > 0 )); then
+      if (( names_len != values_len )); then
+        die "enum_overrides[\"$override_key\"].names length must match values for $api/$policy"
+      fi
+      yq_apply "$spec_path[\"x-enumNames\"] = []" "$rendered_spec"
+      local name escaped_name
+      while IFS= read -r name; do
+        escaped_name="${name//\\/\\\\}"
+        escaped_name="${escaped_name//\"/\\\"}"
+        yq_apply "$spec_path[\"x-enumNames\"] += [\"$escaped_name\"]" "$rendered_spec"
+      done < <(q "$cfg_root.enum_overrides[\"$override_key\"].names[]")
+    fi
+  done < <(q "$cfg_root.enum_overrides // {} | keys | .[]")
+}
+
 LISTEN="$(q '.listen // ":8282"')"
 AUTH_HEADER="$(q '.auth.header // "X-Agent-Token"')"
+NETWORK="$(q '.network // "vault"')"
 WALLARM_IMAGE="$(q '.wallarm.image // "wallarm/api-firewall:v0.9.5"')"
 WALLARM_SERVER_READ_BUFFER_SIZE="$(q '.wallarm.server_read_buffer_size // 65536')"
 WALLARM_SERVER_WRITE_BUFFER_SIZE="$(q '.wallarm.server_write_buffer_size // 16384')"
@@ -129,6 +203,7 @@ declare -a ROUTES=()
 declare -A FW_SPEC_SOURCES=()
 declare -A FW_SPECS=()
 declare -A FW_UPSTREAMS=()
+declare -A FW_RESP_VALIDATION=()
 declare -A ROUTE_GUARD=()
 GEN_SPEC_DIR=".generated/specs"
 
@@ -180,6 +255,13 @@ for agent in "${AGENTS[@]}"; do
       fw_key="$api|$policy"
       FW_SPEC_SOURCES[$fw_key]="$spec_src"
       FW_UPSTREAMS[$fw_key]="$api_upstream"
+
+      resp_val="$(q ".apis.$api.policies.$policy.response_validation // \"LOG_ONLY\"")"
+      case "$resp_val" in
+        BLOCK|LOG_ONLY|DISABLE) ;;
+        *) die "Invalid response_validation '$resp_val' for $api/$policy (must be BLOCK, LOG_ONLY, or DISABLE)" ;;
+      esac
+      FW_RESP_VALIDATION[$fw_key]="$resp_val"
     fi
   done
 done
@@ -192,7 +274,8 @@ for key in "${FW_KEYS[@]}"; do
   rendered_spec="$GEN_SPEC_DIR/${api}-${policy}.yaml"
 
   cp "$source_spec" "$rendered_spec"
-  apply_team_scope_policy "$api" "$policy" "$rendered_spec"
+  expand_team_scope "$api" "$policy" "$rendered_spec"
+  apply_enum_overrides "$api" "$policy" "$rendered_spec"
   FW_SPECS[$key]="$rendered_spec"
 done
 
@@ -281,8 +364,8 @@ services:
     ports: ["${VAULT_BIND:-127.0.0.1}:${VAULT_PORT:-8282}:8282"]
     volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
     env_file: ["${FIREWALL_ENV_FILE:-.env}"]
-    networks: [vault]
 EOF_COMPOSE
+  echo "    networks: [$NETWORK]"
 
   mapfile -t FW_KEYS < <(printf "%s\n" "${!FW_SPECS[@]}" | sort)
 
@@ -298,6 +381,7 @@ EOF_COMPOSE
     IFS='|' read -r api policy <<<"$key"
     spec="${FW_SPECS[$key]}"
     upstream="${FW_UPSTREAMS[$key]}"
+    resp_val="${FW_RESP_VALIDATION[$key]:-LOG_ONLY}"
 
     cat <<EOF_FW
 
@@ -314,18 +398,18 @@ EOF_COMPOSE
       APIFW_SERVER_WRITE_BUFFER_SIZE: "$WALLARM_SERVER_WRITE_BUFFER_SIZE"
       APIFW_READ_BUFFER_SIZE: "$WALLARM_READ_BUFFER_SIZE"
       APIFW_REQUEST_VALIDATION: BLOCK
-      APIFW_RESPONSE_VALIDATION: LOG_ONLY
+      APIFW_RESPONSE_VALIDATION: $resp_val
       APIFW_CUSTOM_BLOCK_STATUS_CODE: "403"
       APIFW_LOG_FORMAT: JSON
       APIFW_LOG_LEVEL: INFO
-    networks: [vault]
+    networks: [$NETWORK]
 EOF_FW
   done
 
-  cat <<'EOF_NET'
+  cat <<EOF_NET
 
 networks:
-  vault:
+  $NETWORK:
 EOF_NET
 } > docker-compose.yml
 

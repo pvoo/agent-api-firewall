@@ -67,7 +67,7 @@ resolve_token() {
   fi
 }
 
-check_team_scope_render() {
+check_enum_overrides_render() {
   local found=0
   local api
   local -a APIS=()
@@ -77,46 +77,80 @@ check_team_scope_render() {
     local -a POLICIES=()
     mapfile -t POLICIES < <(yq -r ".apis.$api.policies | keys | .[]" config.yaml)
     for policy in "${POLICIES[@]}"; do
+      local rendered=".generated/specs/${api}-${policy}.yaml"
+
+      # Check team_scope (backward-compat)
       local has_team_scope
       has_team_scope="$(yq -r ".apis.$api.policies.$policy | has(\"team_scope\")" config.yaml)"
-      [[ "$has_team_scope" == "true" ]] || continue
-      found=1
+      if [[ "$has_team_scope" == "true" ]]; then
+        found=1
 
-      local rendered=".generated/specs/${api}-${policy}.yaml"
-      if [[ ! -f "$rendered" ]]; then
-        echo "FAIL: missing rendered spec for team_scope policy $api/$policy ($rendered)"
-        fail=$((fail + 1))
-        continue
+        if [[ ! -f "$rendered" ]]; then
+          echo "FAIL: missing rendered spec for team_scope policy $api/$policy ($rendered)"
+          fail=$((fail + 1))
+          continue
+        fi
+
+        local cfg_field
+        cfg_field="$(yq -r ".apis.$api.policies.$policy.team_scope.field // \"team_assignee_id\"" config.yaml)"
+        local spec_field
+        spec_field="$(yq -r '.components.schemas.TeamFilterEquals.properties.field.enum[0] // ""' "$rendered")"
+        if [[ "$cfg_field" == "$spec_field" ]]; then
+          echo "PASS: team_scope field rendered for $api/$policy"
+          pass=$((pass + 1))
+        else
+          echo "FAIL: team_scope field mismatch for $api/$policy (config=$cfg_field, spec=$spec_field)"
+          fail=$((fail + 1))
+        fi
+
+        local cfg_ids
+        cfg_ids="$(yq -r ".apis.$api.policies.$policy.team_scope.allowed_ids // [] | join(\",\")" config.yaml)"
+        local spec_ids
+        spec_ids="$(yq -r '.components.schemas.AllowedTeamId.enum // [] | join(",")' "$rendered")"
+        if [[ "$cfg_ids" == "$spec_ids" ]]; then
+          echo "PASS: team_scope ids rendered for $api/$policy"
+          pass=$((pass + 1))
+        else
+          echo "FAIL: team_scope ids mismatch for $api/$policy (config=$cfg_ids, spec=$spec_ids)"
+          fail=$((fail + 1))
+        fi
       fi
 
-      local cfg_field
-      cfg_field="$(yq -r ".apis.$api.policies.$policy.team_scope.field // \"team_assignee_id\"" config.yaml)"
-      local spec_field
-      spec_field="$(yq -r '.components.schemas.TeamFilterEquals.properties.field.enum[0] // ""' "$rendered")"
-      if [[ "$cfg_field" == "$spec_field" ]]; then
-        echo "PASS: team_scope field rendered for $api/$policy"
-        pass=$((pass + 1))
-      else
-        echo "FAIL: team_scope field mismatch for $api/$policy (config=$cfg_field, spec=$spec_field)"
-        fail=$((fail + 1))
-      fi
+      # Check enum_overrides (generic)
+      local has_overrides
+      has_overrides="$(yq -r ".apis.$api.policies.$policy | has(\"enum_overrides\")" config.yaml)"
+      if [[ "$has_overrides" == "true" ]]; then
+        found=1
 
-      local cfg_ids
-      cfg_ids="$(yq -r ".apis.$api.policies.$policy.team_scope.allowed_ids // [] | join(\",\")" config.yaml)"
-      local spec_ids
-      spec_ids="$(yq -r '.components.schemas.AllowedTeamId.enum // [] | join(",")' "$rendered")"
-      if [[ "$cfg_ids" == "$spec_ids" ]]; then
-        echo "PASS: team_scope ids rendered for $api/$policy"
-        pass=$((pass + 1))
-      else
-        echo "FAIL: team_scope ids mismatch for $api/$policy (config=$cfg_ids, spec=$spec_ids)"
-        fail=$((fail + 1))
+        if [[ ! -f "$rendered" ]]; then
+          echo "FAIL: missing rendered spec for enum_overrides policy $api/$policy ($rendered)"
+          fail=$((fail + 1))
+          continue
+        fi
+
+        local override_key
+        while IFS= read -r override_key; do
+          [[ -n "$override_key" ]] || continue
+          local spec_path=".components.schemas.${override_key//\./.}"
+
+          local cfg_vals
+          cfg_vals="$(yq -r ".apis.$api.policies.$policy.enum_overrides[\"$override_key\"].values // [] | join(\",\")" config.yaml)"
+          local spec_vals
+          spec_vals="$(yq -r "$spec_path.enum // [] | join(\",\")" "$rendered")"
+          if [[ "$cfg_vals" == "$spec_vals" ]]; then
+            echo "PASS: enum_overrides[$override_key] values rendered for $api/$policy"
+            pass=$((pass + 1))
+          else
+            echo "FAIL: enum_overrides[$override_key] values mismatch for $api/$policy (config=$cfg_vals, spec=$spec_vals)"
+            fail=$((fail + 1))
+          fi
+        done < <(yq -r ".apis.$api.policies.$policy.enum_overrides // {} | keys | .[]" config.yaml)
       fi
     done
   done
 
   if [[ "$found" == "0" ]]; then
-    echo "SKIP: no team_scope policy configured"
+    echo "SKIP: no team_scope or enum_overrides policy configured"
     skip=$((skip + 1))
   fi
 }
@@ -134,7 +168,7 @@ else
   fail=$((fail + 1))
 fi
 
-check_team_scope_render
+check_enum_overrides_render
 
 mapfile -t AGENTS < <(yq -r '.agents | keys | .[]' config.yaml)
 

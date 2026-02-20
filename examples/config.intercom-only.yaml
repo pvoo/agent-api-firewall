@@ -1,4 +1,5 @@
 listen: ":8282"
+network: vault
 auth:
   header: "X-Agent-Token"
 
@@ -18,7 +19,19 @@ apis:
     policies:
       support:
         spec: specs/intercom-support.yaml
+        response_validation: LOG_ONLY
+        # team_scope is a convenient shorthand for Intercom-style team filtering.
+        # It expands AllowedTeamId + TeamFilter*.field enums in the spec.
         team_scope:
           field: team_assignee_id
           allowed_ids: [6979737, 7257201, 8589981]
           allowed_names: [Support, Tickets, Test]
+        # Or use enum_overrides for the same result (works with any API spec):
+        #   enum_overrides:
+        #     AllowedTeamId:
+        #       values: [6979737, 7257201, 8589981]
+        #       names: [Support, Tickets, Test]
+        #     TeamFilterEquals.properties.field:
+        #       values: [team_assignee_id]
+        #     TeamFilterIn.properties.field:
+        #       values: [team_assignee_id]

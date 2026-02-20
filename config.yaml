@@ -11,6 +11,7 @@
 # - If policy has a spec, unlisted endpoints/methods are blocked by Wallarm.
 
 listen: ":8282"
+network: vault       # Docker network name (default: vault)
 
 auth:
   # Header checked per route against the configured agent token.
@@ -55,10 +56,20 @@ apis:
     policies:
       support:
         spec: specs/intercom-support.yaml
+        response_validation: LOG_ONLY    # BLOCK, LOG_ONLY (default), or DISABLE
         team_scope:
           field: team_assignee_id
           allowed_ids: [6979737, 7257201, 8589981]
           allowed_names: [Support, Tickets, Test]
+        # Generic equivalent of team_scope above (enum_overrides):
+        #   enum_overrides:
+        #     AllowedTeamId:
+        #       values: [6979737, 7257201, 8589981]
+        #       names: [Support, Tickets, Test]
+        #     TeamFilterEquals.properties.field:
+        #       values: [team_assignee_id]
+        #     TeamFilterIn.properties.field:
+        #       values: [team_assignee_id]
 
   openai:
     upstream: https://api.openai.com
